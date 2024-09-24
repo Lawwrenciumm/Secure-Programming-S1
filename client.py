@@ -4,6 +4,11 @@ import websockets
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
+import sys
+from collections import deque
+
+# Queue to handle specific requests like client list
+request_queue = deque()
 
 # Generate RSA key pair for the client (for testing purposes)
 def generate_key_pair():
@@ -25,7 +30,7 @@ def serialize_public_key(public_key):
 # Define the 'hello' message that includes the client's fingerprint
 async def send_hello_message(websocket):
     private_key, public_key = generate_key_pair()
-    
+
     # Create the fingerprint (SHA-256 of the public key)
     fingerprint = hashes.Hash(hashes.SHA256(), backend=default_backend())
     fingerprint.update(serialize_public_key(public_key).encode('utf-8'))
@@ -34,13 +39,14 @@ async def send_hello_message(websocket):
     # Create the "hello" message JSON
     hello_message = {
         "type": "hello",
-        "fingerprint": fingerprint_hex
+        "fingerprint": fingerprint_hex,
+        "public-key": serialize_public_key(public_key)
     }
-    
+
     # Send the hello message as a JSON object
     await websocket.send(json.dumps(hello_message))
     print(f"Sent hello message: {json.dumps(hello_message)}")
-        
+
     # Wait for the server's acknowledgment response
     response = await websocket.recv()
     print(f"Received response: {response}")
@@ -51,38 +57,92 @@ async def request_client_list(websocket):
     client_list_request = {"type": "client_list_request"}
     await websocket.send(json.dumps(client_list_request))
     print("Requested client list.")
-    
-    # Receive and display the client list response from the server
-    client_list_response = await websocket.recv()
-    response_data = json.loads(client_list_response)
-    
-    print("Client list response received:")
-    for server in response_data.get("servers", []):
-        print(f"Server ID: {server['server-id']}, Address: {server['address']}")
-        for client in server["clients"]:
-            print(f" - Client ID: {client['client-id']}, Public Key: {client['public-key']}")
 
-# Main function to handle client interaction
-async def client_interaction(server_uri):
-    async with websockets.connect(server_uri) as websocket:
-        # Send the initial hello message to the server
+    # Add request type to the queue so handle_incoming_messages knows what to expect
+    request_queue.append("client_list")
+
+# Function to send a public chat message
+async def send_public_message(websocket, from_client, message):
+    chat_message = {
+        "type": "public_chat",
+        "from": from_client,
+        "message": message
+    }
+    await websocket.send(json.dumps(chat_message))
+
+# Coroutine to handle user input
+async def handle_user_input(websocket, from_client):
+    loop = asyncio.get_event_loop()
+    while True:
+        # Read user input asynchronously
+        message = await loop.run_in_executor(None, sys.stdin.readline)
+        message = message.strip()
+        if message.lower() == '/exit':
+            print("Exiting chat...")
+            await websocket.close()
+            sys.exit()
+        elif message.lower() == '/clients':
+            await request_client_list(websocket)
+        elif message:
+            await send_public_message(websocket, from_client, message)
+
+# Coroutine to handle incoming messages
+async def handle_incoming_messages(websocket):
+    try:
+        async for message in websocket:
+            data = json.loads(message)
+
+            # Handle messages based on their type
+            if data["type"] == "public_chat":
+                sender = data.get("from", "Unknown")
+                msg = data.get("message", "")
+                print(f"\n{sender}: {msg}")
+
+            elif data["type"] == "ack":
+                print(f"Server: {data['message']}")
+
+            elif data["type"] == "client_list" and request_queue and request_queue[0] == "client_list":
+                request_queue.popleft()  # Remove the request type from the queue
+                print("Online Clients:")
+                for server in data.get("servers", []):
+                    print(f"Server ID: {server.get('server-id')}, Address: {server.get('address')}")
+                    for client in server.get("clients", []):
+                        print(f" - Client ID: {client.get('client-id')}")
+
+            else:
+                print(f"Received unknown message type: {data}")
+
+    except websockets.ConnectionClosed:
+        print("Connection closed by the server.")
+        sys.exit()
+
+# Client's main function
+async def main():
+    uri = "ws://203.7.78.43:23451"
+    
+    from_client = input("Enter your name: ").strip()
+    if not from_client:
+        from_client = "Anonymous"
+
+    async with websockets.connect(uri) as websocket:
         await send_hello_message(websocket)
 
-        # Interactive loop to keep the client running
-        while True:
-            user_input = input("Enter 'list' to request the client list, or 'exit' to disconnect: ").strip().lower()
+        # Start tasks for sending and receiving messages
+        send_task = asyncio.create_task(handle_user_input(websocket, from_client))
+        receive_task = asyncio.create_task(handle_incoming_messages(websocket))
 
-            if user_input == 'list':
-                # Request the list of online clients
-                await request_client_list(websocket)
-            elif user_input == 'exit':
-                print("Disconnecting...")
-                break
-            else:
-                print("Invalid input. Please enter 'list' or 'exit'.")
+        # Wait for either task to complete (which shouldn't happen under normal operation)
+        done, pending = await asyncio.wait(
+            [send_task, receive_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
-# Define the WebSocket server URI
-server_uri = "ws://localhost:8080"  # Server URI where the client connects
+        for task in pending:
+            task.cancel()
 
 # Run the client
-asyncio.get_event_loop().run_until_complete(client_interaction(server_uri))
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nClient exited manually.")
