@@ -121,7 +121,7 @@ async def handle_incoming_messages(websocket):
 
 # Client's main function
 async def main():
-    uri = "ws://localhost:23451"
+    uri = "ws://localhost:23452"
     
     from_client = input("Enter your name: ").strip()
     if not from_client:

@@ -7,8 +7,8 @@ from cryptography.hazmat.backends import default_backend
 
 connected_clients = []
 server_connections = {}  # Dictionary to track connections to other servers by their URI
-server_list = ["ws://localhost:23452"]  # Update with actual server URIs in the mesh
-server_id = "server-1"  # Unique ID for this server (replace with a unique ID per server)
+server_list = ["ws://localhost:23451"]  # Update with actual server URIs in the mesh
+server_id = "server-2"  # Unique ID for this server (replace with a unique ID per server)
 
 # Broadcast a message to all connected clients
 async def broadcast_message_to_clients(message):
@@ -164,8 +164,8 @@ async def hello_handler(websocket, path):
 
 # Start the WebSocket server
 async def start_server():
-    server = await websockets.serve(hello_handler, "localhost", 23451)
-    print(f"WebSocket server started on ws://localhost:23451 (Server ID: {server_id})")
+    server = await websockets.serve(hello_handler, "localhost", 23452)
+    print(f"WebSocket server started on ws://localhost:23452 (Server ID: {server_id})")
     await connect_to_servers()
     await server.wait_closed()
 
