@@ -3,7 +3,7 @@ import asyncio
 import websockets
 
 # Global Variables
-connected_clients = []      # List of connected clients
+connected_clients = {}      # Dict mapping client_id to client info
 server_connections = {}     # Dictionary of connected servers
 server_id = None            # Unique identifier for this server
 
@@ -11,7 +11,7 @@ server_id = None            # Unique identifier for this server
 async def broadcast_to_clients(message):
     if connected_clients:
         await asyncio.gather(
-            *[client['websocket'].send(json.dumps(message)) for client in connected_clients],
+            *[client['websocket'].send(json.dumps(message)) for client in connected_clients.values()],
             return_exceptions=True
         )
 
@@ -42,12 +42,31 @@ async def handle_client_messages(websocket, client_id):
                 await broadcast_to_clients(data)
                 # Forward to other servers
                 await forward_to_servers(data)
+            elif data['type'] == 'private_chat':
+                recipient_id = data.get('to')
+                if recipient_id in connected_clients:
+                    # Send directly to the recipient
+                    recipient_ws = connected_clients[recipient_id]['websocket']
+                    await recipient_ws.send(json.dumps(data))
+                else:
+                    # Forward to other servers
+                    data['origin_server'] = server_id
+                    await forward_to_servers(data)
+            elif data['type'] == 'client_list_request':
+                # Prepare the client list
+                client_list = [{'id': c['client_id'], 'name': c['name']} for c in connected_clients.values()]
+                response = {
+                    'type': 'client_list',
+                    'clients': client_list,
+                }
+                await websocket.send(json.dumps(response))
             else:
                 print(f"Unknown message type from client {client_id}: {data['type']}")
     except websockets.ConnectionClosed:
         print(f"Client {client_id} disconnected.")
         # Remove client from connected_clients
-        connected_clients[:] = [c for c in connected_clients if c['client_id'] != client_id]
+        if client_id in connected_clients:
+            del connected_clients[client_id]
 
 # Handle messages from servers
 async def handle_server_messages(websocket, sid):
@@ -62,6 +81,18 @@ async def handle_server_messages(websocket, sid):
                 await broadcast_to_clients(data)
                 # Forward to other servers excluding the sender
                 await forward_to_servers(data, exclude_server=sid)
+            elif data['type'] == 'private_chat':
+                if data.get('origin_server') == server_id:
+                    # Ignore messages originating from this server
+                    continue
+                recipient_id = data.get('to')
+                if recipient_id in connected_clients:
+                    # Send directly to the recipient
+                    recipient_ws = connected_clients[recipient_id]['websocket']
+                    await recipient_ws.send(json.dumps(data))
+                else:
+                    # Forward to other servers excluding the sender
+                    await forward_to_servers(data, exclude_server=sid)
             else:
                 print(f"Unknown message type from server {sid}: {data['type']}")
     except websockets.ConnectionClosed:
@@ -112,8 +143,9 @@ async def accept_connection(websocket, path):
         if data['type'] == 'hello':
             # Client connection
             client_id = data['fingerprint']
-            connected_clients.append({'client_id': client_id, 'websocket': websocket})
-            print(f"Client {client_id} connected.")
+            client_name = data.get('name', 'Unknown')
+            connected_clients[client_id] = {'client_id': client_id, 'websocket': websocket, 'name': client_name}
+            print(f"Client {client_name} ({client_id}) connected.")
             # Send acknowledgment
             await websocket.send(json.dumps({'type': 'ack', 'message': 'Connected to server'}))
             # Start handling client messages

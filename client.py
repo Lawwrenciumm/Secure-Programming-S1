@@ -1,16 +1,16 @@
 import json
 import asyncio
 import websockets
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
 import sys
 from collections import deque
 
-# Queue to handle specific requests like client list
-request_queue = deque()
+# Mapping from names to client IDs (for convenience)
+name_to_id_map = {}
 
-# Generate RSA key pair for the client (for testing purposes)
+# Generate RSA key pair for the client
 def generate_key_pair():
     private_key = rsa.generate_private_key(
         public_exponent=65537,
@@ -20,38 +20,26 @@ def generate_key_pair():
     public_key = private_key.public_key()
     return private_key, public_key
 
-# Serialize the public key to PEM format for sending to the server
+# Serialize the public key to PEM format
 def serialize_public_key(public_key):
     return public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode('utf-8')
 
-# Define the 'hello' message that includes the client's fingerprint
-async def send_hello_message(websocket):
-    private_key, public_key = generate_key_pair()
-
-    # Create the fingerprint (SHA-256 of the public key)
-    fingerprint = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    fingerprint.update(serialize_public_key(public_key).encode('utf-8'))
-    fingerprint_hex = fingerprint.finalize().hex()
-
-    # Create the "hello" message JSON
+# Send the 'hello' message with the client's fingerprint and name
+async def send_hello_message(websocket, fingerprint_hex, public_key, from_client):
     hello_message = {
         "type": "hello",
         "fingerprint": fingerprint_hex,
-        "public-key": serialize_public_key(public_key)
+        "public-key": serialize_public_key(public_key),
+        "name": from_client
     }
-
-    # Send the hello message as a JSON object
     await websocket.send(json.dumps(hello_message))
-    #print(f"Sent hello message: {json.dumps(hello_message)}")
-
-    # Wait for the server's acknowledgment response
     response = await websocket.recv()
     print(f"Received response: {response}")
 
-# Function to send a public chat message with a counter
+# Send a public chat message
 async def send_public_message(websocket, from_client, message):
     chat_message = {
         "type": "public_chat",
@@ -60,11 +48,21 @@ async def send_public_message(websocket, from_client, message):
     }
     await websocket.send(json.dumps(chat_message))
 
-# Coroutine to handle user input
-async def handle_user_input(websocket, from_client):
+# Send a private chat message
+async def send_private_message(websocket, from_client, client_id, recipient_id, message):
+    chat_message = {
+        "type": "private_chat",
+        "from": from_client,
+        "from_id": client_id,
+        "to": recipient_id,
+        "message": message,
+    }
+    await websocket.send(json.dumps(chat_message))
+
+# Handle user input from the console
+async def handle_user_input(websocket, from_client, client_id):
     loop = asyncio.get_event_loop()
     while True:
-        # Read user input asynchronously
         message = await loop.run_in_executor(None, sys.stdin.readline)
         message = message.strip()
         if message.lower() == '/exit':
@@ -72,12 +70,24 @@ async def handle_user_input(websocket, from_client):
             await websocket.close()
             sys.exit()
         elif message.lower() == '/clients':
-            # await request_client_list(websocket)
-            pass
+            # Request the list of online clients
+            await websocket.send(json.dumps({'type': 'client_list_request'}))
+        elif message.startswith('/msg '):
+            # Send a private message
+            try:
+                parts = message.split(' ', 2)
+                if len(parts) < 3:
+                    print("Usage: /msg recipient_id message")
+                    continue
+                recipient_id = parts[1]
+                private_message = parts[2]
+                await send_private_message(websocket, from_client, client_id, recipient_id, private_message)
+            except Exception as e:
+                print(f"Error sending private message: {e}")
         elif message:
             await send_public_message(websocket, from_client, message)
 
-# Coroutine to handle incoming messages
+# Handle incoming messages from the server
 async def handle_incoming_messages(websocket):
     try:
         async for message in websocket:
@@ -89,16 +99,20 @@ async def handle_incoming_messages(websocket):
                 msg = data.get("message", "")
                 print(f"\n{sender}: {msg}")
 
+            elif data["type"] == "private_chat":
+                sender = data.get("from", "Unknown")
+                msg = data.get("message", "")
+                print(f"\n[Private] {sender}: {msg}")
+
             elif data["type"] == "ack":
                 print(f"Server: {data['message']}")
 
-            elif data["type"] == "client_list" and request_queue and request_queue[0] == "client_list":
-                request_queue.popleft()  # Remove the request type from the queue
-                print("Online Clients:")
-                for server in data.get("servers", []):
-                    print(f"Server ID: {server.get('server-id')}, Address: {server.get('address')}")
-                    for client in server.get("clients", []):
-                        print(f" - Client ID: {client.get('client-id')}")
+            elif data["type"] == "client_list":
+                clients = data.get("clients", [])
+                print("Online clients:")
+                for client in clients:
+                    print(f"- {client['name']} (ID: {client['id']})")
+                    name_to_id_map[client['name']] = client['id']
 
             else:
                 print(f"Received unknown message type: {data}")
@@ -121,24 +135,31 @@ async def main():
             startup = True
 
         elif startup_option.lower() == "manual":
-            uri = "Enter uri: "
+            uri = input("Enter URI: ").strip()
             startup = True
 
         else:
             print("Invalid option.")
+
+    # Generate key pair and fingerprint
+    private_key, public_key = generate_key_pair()
+    fingerprint = hashes.Hash(hashes.SHA256(), backend=default_backend())
+    fingerprint.update(serialize_public_key(public_key).encode('utf-8'))
+    fingerprint_hex = fingerprint.finalize().hex()
+    print(f"Your client ID is: {fingerprint_hex}")
 
     from_client = input("Enter your name: ").strip()
     if not from_client:
         from_client = "Anonymous"
 
     async with websockets.connect(uri) as websocket:
-        await send_hello_message(websocket)
+        await send_hello_message(websocket, fingerprint_hex, public_key, from_client)
 
         # Start tasks for sending and receiving messages
-        send_task = asyncio.create_task(handle_user_input(websocket, from_client))
+        send_task = asyncio.create_task(handle_user_input(websocket, from_client, fingerprint_hex))
         receive_task = asyncio.create_task(handle_incoming_messages(websocket))
 
-        # Wait for either task to complete (which shouldn't happen under normal operation)
+        # Wait for either task to complete
         done, pending = await asyncio.wait(
             [send_task, receive_task],
             return_when=asyncio.FIRST_COMPLETED,
