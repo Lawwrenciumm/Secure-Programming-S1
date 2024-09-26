@@ -1,6 +1,7 @@
 import json
 import asyncio
 import websockets
+import os
 
 # Global Variables
 connected_clients = {}      # Local clients connected to this server
@@ -8,6 +9,10 @@ global_clients = {}         # All clients connected across servers
 server_connections = {}     # Dictionary of connected servers
 server_id = None            # Unique identifier for this server
 server_uri = None
+UPLOAD_DIR = 'uploads'      # Directory for uploaded files
+
+# Ensure upload directory exists
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Broadcast a message to all connected clients
 async def broadcast_to_clients(message):
@@ -44,6 +49,12 @@ async def handle_client_messages(websocket, client_id):
                 await broadcast_to_clients(data)
                 # Forward to other servers
                 await forward_to_servers(data)
+            
+            elif data['type'] == 'file_upload':
+                await handle_file_upload(websocket, data, client_id)
+            elif data['type'] == 'file_download':
+                await handle_file_download(websocket, data, client_id)
+                
             elif data['type'] == 'private_chat':
                 recipient_id = data.get('to')
                 if recipient_id in connected_clients:
@@ -85,6 +96,43 @@ async def handle_client_messages(websocket, client_id):
                 'server_id': server_id
             }
             await forward_to_servers(client_disconnect_message)
+
+# Handle file upload from a client
+async def handle_file_upload(websocket, data, client_id):
+    filename = data['filename']
+    file_size = data['file_size']
+
+    # Prepare to receive the file
+    with open(os.path.join(UPLOAD_DIR, filename), 'wb') as f:
+        bytes_received = 0
+        while bytes_received < file_size:
+            chunk = await websocket.recv()
+            f.write(chunk)
+            bytes_received += len(chunk)
+    
+    print(f"File '{filename}' uploaded by {client_id}.")
+    # Acknowledge the upload
+    await websocket.send(json.dumps({'type': 'file_upload_ack', 'message': 'File uploaded successfully'}))
+
+# Handle file download requests
+async def handle_file_download(websocket, data, client_id):
+    filename = data['filename']
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    if os.path.isfile(file_path):
+        # Send file size first
+        file_size = os.path.getsize(file_path)
+        await websocket.send(json.dumps({'type': 'file_download_ack', 'file_size': file_size}))
+
+        # Send the file in chunks
+        with open(file_path, 'rb') as f:
+            while (chunk := f.read(1024)):  # Read in 1KB chunks
+                await websocket.send(chunk)
+        
+        print(f"File '{filename}' sent to {client_id}.")
+    else:
+        print(f"File '{filename}' not found for {client_id}.")
+        await websocket.send(json.dumps({'type': 'file_download_nack', 'message': 'File not found'}))
 
 # Handle messages from servers
 async def handle_server_messages(websocket, sid):

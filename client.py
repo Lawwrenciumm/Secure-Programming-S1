@@ -1,11 +1,15 @@
 import json
 import asyncio
 import websockets
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
 import sys
+import os
 from collections import deque
+
+# Queue to handle specific requests like client list and file operations
+request_queue = deque()
 
 # Mapping from names to client IDs (for convenience)
 name_to_id_map = {}
@@ -63,6 +67,56 @@ async def send_private_message(websocket, from_client, client_id, recipient_id, 
     }
     await websocket.send(json.dumps(chat_message))
 
+# Function to upload a file to the server
+async def upload_file(websocket, file_path):
+    file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+
+    # Send a file upload message to the server
+    upload_message = {
+        "type": "file_upload",
+        "filename": file_name,
+        "file_size": file_size
+    }
+    await websocket.send(json.dumps(upload_message))
+
+    # Send the file in chunks
+    with open(file_path, 'rb') as f:
+        while True:
+            chunk = f.read(1024)  # Read in 1KB chunks
+            if not chunk:
+                break
+            await websocket.send(chunk)
+
+    print(f"File '{file_name}' uploaded successfully.")
+
+# Function to download a file from the server
+async def download_file(websocket, file_name):
+    download_message = {
+        "type": "file_download",
+        "filename": file_name
+    }
+    await websocket.send(json.dumps(download_message))
+
+    # Wait for acknowledgment with file size
+    response = await websocket.recv()
+    data = json.loads(response)
+
+    if data['type'] == 'file_download_ack':
+        file_size = data['file_size']
+        print(f"Starting download of '{file_name}' ({file_size} bytes)")
+
+        with open(file_name, 'wb') as f:
+            bytes_received = 0
+            while bytes_received < file_size:
+                chunk = await websocket.recv()
+                f.write(chunk)
+                bytes_received += len(chunk)
+
+        print(f"File '{file_name}' downloaded successfully.")
+    else:
+        print(f"Error: {data.get('message', 'Failed to download file')}")
+
 # Handle user input from the console
 async def handle_user_input(websocket, from_client, client_id):
     loop = asyncio.get_event_loop()
@@ -88,6 +142,14 @@ async def handle_user_input(websocket, from_client, client_id):
                 await send_private_message(websocket, from_client, client_id, recipient_id, private_message)
             except Exception as e:
                 print(f"Error sending private message: {e}")
+                
+        elif message.lower().startswith('/upload'):
+            _, file_path = message.split(maxsplit=1)
+            request_queue.append(('upload', file_path))  # Add upload request to the queue
+
+        elif message.lower().startswith('/download'):
+            _, file_name = message.split(maxsplit=1)
+            request_queue.append(('download', file_name))  # Add download request to the queue
         elif message:
             await send_public_message(websocket, from_client, message)
 
@@ -117,10 +179,23 @@ async def handle_incoming_messages(websocket):
                 for client in clients:
                     print(f"- {client['name']} (ID: {client['id']})")
                     name_to_id_map[client['name']] = client['id']
+                    
+            elif data["type"] == "file_upload_ack":
+                print(f"Server: {data['message']}")
+
+            elif data["type"] == "file_download_nack":
+                print(f"Server: {data['message']}")
 
             else:
                 print(f"Received unknown message type: {data}")
-
+             # Handle queued requests for upload/download
+            if request_queue:
+                operation, file_param = request_queue.popleft()
+                if operation == 'upload':
+                    await upload_file(websocket, file_param)
+                elif operation == 'download':
+                    await download_file(websocket, file_param)
+                    
     except websockets.ConnectionClosed:
         print("Connection closed by the server.")
         sys.exit()
@@ -160,7 +235,8 @@ async def main():
     print("/clients                 see all online users")
     print("/msg <id> <message>      private message")
     print("/exit                    exit program")
-
+    print("/upload <file_path>      uploads file")
+    print("/download <file_name>    downloads file")
     async with websockets.connect(uri) as websocket:
         await send_hello_message(websocket, fingerprint_hex, public_key, from_client)
 
