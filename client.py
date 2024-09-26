@@ -37,7 +37,11 @@ async def send_hello_message(websocket, fingerprint_hex, public_key, from_client
     }
     await websocket.send(json.dumps(hello_message))
     response = await websocket.recv()
-    print(f"Received response: {response}")
+    data = json.loads(response)
+    if data['message'] == 'Connected to server':
+        print("Connection Established")
+    else:
+        print("Connection Failed")
 
 # Send a public chat message
 async def send_public_message(websocket, from_client, message):
@@ -97,7 +101,7 @@ async def handle_incoming_messages(websocket):
             if data["type"] == "public_chat":
                 sender = data.get("from", "Unknown")
                 msg = data.get("message", "")
-                print(f"\n{sender}: {msg}")
+                print(f"\n[Public] {sender}: {msg}")
 
             elif data["type"] == "private_chat":
                 sender = data.get("from", "Unknown")
@@ -151,6 +155,11 @@ async def main():
     from_client = input("Enter your name: ").strip()
     if not from_client:
         from_client = "Anonymous"
+    
+    print("COMMANDS")
+    print("/clients                 see all online users")
+    print("/msg <id> <message>      private message")
+    print("/exit                    exit program")
 
     async with websockets.connect(uri) as websocket:
         await send_hello_message(websocket, fingerprint_hex, public_key, from_client)

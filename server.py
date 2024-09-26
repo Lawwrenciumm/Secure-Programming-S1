@@ -3,9 +3,11 @@ import asyncio
 import websockets
 
 # Global Variables
-connected_clients = {}      # Dict mapping client_id to client info
+connected_clients = {}      # Local clients connected to this server
+global_clients = {}         # All clients connected across servers
 server_connections = {}     # Dictionary of connected servers
 server_id = None            # Unique identifier for this server
+server_uri = None
 
 # Broadcast a message to all connected clients
 async def broadcast_to_clients(message):
@@ -45,16 +47,23 @@ async def handle_client_messages(websocket, client_id):
             elif data['type'] == 'private_chat':
                 recipient_id = data.get('to')
                 if recipient_id in connected_clients:
-                    # Send directly to the recipient
+                    # Recipient is on this server
                     recipient_ws = connected_clients[recipient_id]['websocket']
                     await recipient_ws.send(json.dumps(data))
+                elif recipient_id in global_clients:
+                    # Recipient is on another server
+                    recipient_server_id = global_clients[recipient_id]['server_id']
+                    if recipient_server_id in server_connections:
+                        server_ws = server_connections[recipient_server_id]['websocket']
+                        data['origin_server'] = server_id
+                        await server_ws.send(json.dumps(data))
+                    else:
+                        print(f"Recipient's server {recipient_server_id} is not connected.")
                 else:
-                    # Forward to other servers
-                    data['origin_server'] = server_id
-                    await forward_to_servers(data)
+                    print(f"Recipient {recipient_id} not found.")
             elif data['type'] == 'client_list_request':
                 # Prepare the client list
-                client_list = [{'id': c['client_id'], 'name': c['name']} for c in connected_clients.values()]
+                client_list = [{'id': c['client_id'], 'name': c['name']} for c in global_clients.values()]
                 response = {
                     'type': 'client_list',
                     'clients': client_list,
@@ -64,9 +73,18 @@ async def handle_client_messages(websocket, client_id):
                 print(f"Unknown message type from client {client_id}: {data['type']}")
     except websockets.ConnectionClosed:
         print(f"Client {client_id} disconnected.")
-        # Remove client from connected_clients
+        # Remove client from connected_clients and global_clients
         if client_id in connected_clients:
             del connected_clients[client_id]
+        if client_id in global_clients:
+            del global_clients[client_id]
+            # Notify other servers about the client disconnection
+            client_disconnect_message = {
+                'type': 'client_disconnect',
+                'client_id': client_id,
+                'server_id': server_id
+            }
+            await forward_to_servers(client_disconnect_message)
 
 # Handle messages from servers
 async def handle_server_messages(websocket, sid):
@@ -90,9 +108,32 @@ async def handle_server_messages(websocket, sid):
                     # Send directly to the recipient
                     recipient_ws = connected_clients[recipient_id]['websocket']
                     await recipient_ws.send(json.dumps(data))
+                elif recipient_id in global_clients:
+                    # Forward to the server where the recipient is connected
+                    recipient_server_id = global_clients[recipient_id]['server_id']
+                    if recipient_server_id != server_id and recipient_server_id != sid:
+                        if recipient_server_id in server_connections:
+                            server_ws = server_connections[recipient_server_id]['websocket']
+                            await server_ws.send(json.dumps(data))
+                        else:
+                            print(f"Recipient's server {recipient_server_id} is not connected.")
                 else:
-                    # Forward to other servers excluding the sender
-                    await forward_to_servers(data, exclude_server=sid)
+                    print(f"Recipient {recipient_id} not found.")
+            elif data['type'] == 'client_connect':
+                client_id = data['client_id']
+                client_name = data['name']
+                server_of_client = data['server_id']
+                global_clients[client_id] = {
+                    'client_id': client_id,
+                    'name': client_name,
+                    'server_id': server_of_client
+                }
+                print(f"Client {client_name} ({client_id}) connected on server {server_of_client}.")
+            elif data['type'] == 'client_disconnect':
+                client_id = data['client_id']
+                if client_id in global_clients:
+                    del global_clients[client_id]
+                    print(f"Client {client_id} disconnected from server {data['server_id']}.")
             else:
                 print(f"Unknown message type from server {sid}: {data['type']}")
     except websockets.ConnectionClosed:
@@ -104,8 +145,17 @@ async def handle_server_disconnection(sid):
     if sid in server_connections:
         uri = server_connections[sid]['uri']
         del server_connections[sid]
-        # Attempt to reconnect
-        asyncio.create_task(reconnect_to_server(uri, sid))
+        # Remove clients connected to the disconnected server
+        clients_to_remove = [cid for cid, info in global_clients.items() if info['server_id'] == sid]
+        for cid in clients_to_remove:
+            del global_clients[cid]
+            print(f"Removed client {cid} from global client list due to server {sid} disconnection.")
+        # Attempt to reconnect only if uri is valid
+        if uri:
+            asyncio.create_task(reconnect_to_server(uri, sid))
+        else:
+            print(f"No URI available to reconnect to server {sid}.")
+
 
 # Reconnect to a server
 async def reconnect_to_server(uri, sid):
@@ -124,6 +174,15 @@ async def reconnect_to_server(uri, sid):
                     continue
                 server_connections[sid] = {'websocket': websocket, 'uri': uri}
                 print(f"Reconnected to server {sid} at {uri}")
+                # Send local clients to the reconnected server
+                for client in connected_clients.values():
+                    client_connect_message = {
+                        'type': 'client_connect',
+                        'client_id': client['client_id'],
+                        'name': client['name'],
+                        'server_id': server_id
+                    }
+                    await websocket.send(json.dumps(client_connect_message))
                 # Start handling messages
                 asyncio.create_task(handle_server_messages(websocket, sid))
                 break
@@ -145,7 +204,16 @@ async def accept_connection(websocket, path):
             client_id = data['fingerprint']
             client_name = data.get('name', 'Unknown')
             connected_clients[client_id] = {'client_id': client_id, 'websocket': websocket, 'name': client_name}
+            global_clients[client_id] = {'client_id': client_id, 'name': client_name, 'server_id': server_id}
             print(f"Client {client_name} ({client_id}) connected.")
+            # Notify other servers about the new client
+            client_connect_message = {
+                'type': 'client_connect',
+                'client_id': client_id,
+                'name': client_name,
+                'server_id': server_id
+            }
+            await forward_to_servers(client_connect_message)
             # Send acknowledgment
             await websocket.send(json.dumps({'type': 'ack', 'message': 'Connected to server'}))
             # Start handling client messages
@@ -153,10 +221,20 @@ async def accept_connection(websocket, path):
         elif data['type'] == 'server_hello':
             # Server connection
             sid = data['server_id']
-            # Send back our server_hello
-            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id}))
-            server_connections[sid] = {'websocket': websocket, 'uri': None}
+            peer_uri = data.get('uri')
+            # Send back our server_hello with our own URI
+            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id, 'uri': server_uri}))
+            server_connections[sid] = {'websocket': websocket, 'uri': peer_uri}
             print(f"Server {sid} connected.")
+            # Send local clients to the connected server
+            for client in connected_clients.values():
+                client_connect_message = {
+                    'type': 'client_connect',
+                    'client_id': client['client_id'],
+                    'name': client['name'],
+                    'server_id': server_id
+                }
+                await websocket.send(json.dumps(client_connect_message))
             # Start handling server messages
             await handle_server_messages(websocket, sid)
         else:
@@ -173,21 +251,30 @@ async def connect_to_other_servers(server_list):
     for uri in server_list:
         asyncio.create_task(connect_to_server(uri))
 
-# Connect to a server
 async def connect_to_server(uri):
     while True:
         try:
             print(f"Connecting to server at {uri}")
             websocket = await websockets.connect(uri)
-            # Send server_hello
-            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id}))
+            # Send server_hello with our own URI
+            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id, 'uri': server_uri}))
             # Receive server_hello
             response = await websocket.recv()
             data = json.loads(response)
             if data['type'] == 'server_hello':
                 sid = data['server_id']
-                server_connections[sid] = {'websocket': websocket, 'uri': uri}
+                peer_uri = data.get('uri')
+                server_connections[sid] = {'websocket': websocket, 'uri': peer_uri}
                 print(f"Connected to server {sid} at {uri}")
+                # Send local clients to the connected server
+                for client in connected_clients.values():
+                    client_connect_message = {
+                        'type': 'client_connect',
+                        'client_id': client['client_id'],
+                        'name': client['name'],
+                        'server_id': server_id
+                    }
+                    await websocket.send(json.dumps(client_connect_message))
                 # Start handling server messages
                 asyncio.create_task(handle_server_messages(websocket, sid))
                 break
@@ -200,7 +287,7 @@ async def connect_to_server(uri):
 
 # Main function to start the server
 async def start_server():
-    global server_id
+    global server_id, server_uri
     # Get server details from the user
     startup = False
     while not startup:
@@ -226,6 +313,8 @@ async def start_server():
         else:
             print("Invalid option.")
 
+    server_uri = f"ws://localhost:{host_port}"
+    
     # Parse neighbour server URIs
     server_list = neighbour_servers.strip().split()
     server_list = ["ws://localhost:" + port for port in server_list]
