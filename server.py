@@ -170,9 +170,29 @@ async def connect_to_server(uri):
 async def start_server():
     global server_id
     # Get server details from the user
-    host_port = input("Server Port: ")
-    server_id = input("Server ID: ")
-    neighbour_servers = input("Server Connections (space-separated URIs): ")
+    startup = False
+    while not startup:
+        startup_option = input("Enter Preset Number or manual: ").strip()
+        if startup_option == "1":
+            host_port = "23451"
+            server_id = "1"
+            neighbour_servers = "23452"
+            startup = True
+
+        elif startup_option == "2":
+            host_port = "23452"
+            server_id = "2"
+            neighbour_servers = "23451"
+            startup = True
+
+        elif startup_option.lower() == "manual":
+            host_port = input("Server Port: ").strip()
+            server_id = input("Server ID: ").strip()
+            neighbour_servers = input("Server Connections (space-separated URIs): ").strip()
+            startup = True
+
+        else:
+            print("Invalid option.")
 
     # Parse neighbour server URIs
     server_list = neighbour_servers.strip().split()

@@ -51,23 +51,12 @@ async def send_hello_message(websocket):
     response = await websocket.recv()
     print(f"Received response: {response}")
 
-# Function to request and display the list of online clients
-async def request_client_list(websocket):
-    # Send a client_list_request message to the server
-    client_list_request = {"type": "client_list_request"}
-    await websocket.send(json.dumps(client_list_request))
-    print("Requested client list.")
-
-    # Add request type to the queue so handle_incoming_messages knows what to expect
-    request_queue.append("client_list")
-
 # Function to send a public chat message with a counter
 async def send_public_message(websocket, from_client, message):
     chat_message = {
         "type": "public_chat",
         "from": from_client,
         "message": message,
-        "counter": 0  # Initialize the counter when the client sends a message
     }
     await websocket.send(json.dumps(chat_message))
 
@@ -83,7 +72,8 @@ async def handle_user_input(websocket, from_client):
             await websocket.close()
             sys.exit()
         elif message.lower() == '/clients':
-            await request_client_list(websocket)
+            # await request_client_list(websocket)
+            pass
         elif message:
             await send_public_message(websocket, from_client, message)
 
@@ -119,8 +109,24 @@ async def handle_incoming_messages(websocket):
 
 # Client's main function
 async def main():
-    uri = "ws://localhost:23451"
-    
+    startup = False
+    while not startup:
+        startup_option = input("Enter Preset Number or manual: ").strip()
+        if startup_option == "1":
+            uri = "ws://localhost:23451"
+            startup = True
+
+        elif startup_option == "2":
+            uri = "ws://localhost:23452"
+            startup = True
+
+        elif startup_option.lower() == "manual":
+            uri = "Enter uri: "
+            startup = True
+
+        else:
+            print("Invalid option.")
+
     from_client = input("Enter your name: ").strip()
     if not from_client:
         from_client = "Anonymous"
