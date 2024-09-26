@@ -53,7 +53,7 @@ async def handle_server_message(message):
     # Handle public chat message
     if data["type"] == "public_chat":
         counter = data.get("counter", 0)
-        if counter > 1:
+        if counter > 2:
             print(f"Message from {data['from']} reached forwarding limit. Ignoring further propagation.")
             return
 
