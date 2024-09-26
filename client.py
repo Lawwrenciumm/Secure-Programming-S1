@@ -45,7 +45,7 @@ async def send_hello_message(websocket):
 
     # Send the hello message as a JSON object
     await websocket.send(json.dumps(hello_message))
-    print(f"Sent hello message: {json.dumps(hello_message)}")
+    #print(f"Sent hello message: {json.dumps(hello_message)}")
 
     # Wait for the server's acknowledgment response
     response = await websocket.recv()
@@ -70,7 +70,6 @@ async def send_public_message(websocket, from_client, message):
         "counter": 0  # Initialize the counter when the client sends a message
     }
     await websocket.send(json.dumps(chat_message))
-    print(f"Sent public message: {message}")
 
 # Coroutine to handle user input
 async def handle_user_input(websocket, from_client):
@@ -99,7 +98,6 @@ async def handle_incoming_messages(websocket):
                 sender = data.get("from", "Unknown")
                 msg = data.get("message", "")
                 print(f"\n{sender}: {msg}")
-                print("You: ", end='', flush=True)  # Prompt for user input again
 
             elif data["type"] == "ack":
                 print(f"Server: {data['message']}")

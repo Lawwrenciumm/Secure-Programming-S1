@@ -2,173 +2,195 @@ import json
 import asyncio
 import websockets
 
-connected_clients = []
-server_connections = {}  # Dictionary to track connections to other servers by their URI
-server_id = 0
+# Global Variables
+connected_clients = []      # List of connected clients
+server_connections = {}     # Dictionary of connected servers
+server_id = None            # Unique identifier for this server
 
 # Broadcast a message to all connected clients
-async def broadcast_message_to_clients(message):
+async def broadcast_to_clients(message):
     if connected_clients:
-        await asyncio.gather(*(client['websocket'].send(json.dumps(message)) for client in connected_clients))
+        await asyncio.gather(
+            *[client['websocket'].send(json.dumps(message)) for client in connected_clients],
+            return_exceptions=True
+        )
 
-async def forward_to_servers(message):
-    global server_connections
-    stale_connections = []
-
-    # Iterate over active connections and forward the message
-    for server_uri, server_ws in server_connections.items():
+# Forward a message to all connected servers except the sender
+async def forward_to_servers(message, exclude_server=None):
+    for sid, conn_info in server_connections.items():
+        if sid == exclude_server:
+            continue  # Skip the server we received the message from
+        websocket = conn_info['websocket']
         try:
-            await server_ws.send(json.dumps(message))
-        except websockets.ConnectionClosedOK:
-            print(f"Connection to server {server_uri} closed gracefully.")
-            stale_connections.append(server_uri)  # Mark connection as stale
+            await websocket.send(json.dumps(message))
+        except websockets.ConnectionClosed:
+            print(f"Connection to server {sid} lost.")
+            # Handle reconnection
+            await handle_server_disconnection(sid)
         except Exception as e:
-            print(f"Error sending message to {server_uri}: {e}")
-            stale_connections.append(server_uri)
+            print(f"Error sending message to server {sid}: {e}")
 
-    # Remove stale connections and attempt to reconnect
-    for uri in stale_connections:
-        del server_connections[uri]
-        print(f"Removed stale connection to server {uri}")
-        # Attempt to reconnect after removing the stale connection
-        asyncio.create_task(reconnect_to_server(uri))
-
-# Send an update to other servers about connected clients
-async def update_clients_to_servers():
-    client_list_message = {
-        "type": "client_list_update",
-        "server_id": server_id,
-        "clients": [{"client-id": client["client-id"], "parent_server": client["parent_server"]} for client in connected_clients]
-    }
-    await forward_to_servers(client_list_message)
-
-# Handle incoming messages from other servers
-async def handle_server_message(message):
-    data = json.loads(message)
-    
-    # Handle public chat message
-    if data["type"] == "public_chat":
-
-        chat_message = {
-            "type": "public_chat",
-            "from": data["from"],
-            "message": data["message"],
-            "parent_server": server_id
-        }
-        print(f"Public message from {data['from']} on {server_id}: {data['message']}")
-
-        # Broadcast to local clients
-        await broadcast_message_to_clients(chat_message)
-
-        # Forward the message to other servers
-        await forward_to_servers(chat_message)
-
-    elif data["type"] == "client_list_update":
-        print(f"Received client list update from {data['server_id']}")
-
-# Handle client connection
-async def hello_handler(websocket, path):
+# Handle messages from clients
+async def handle_client_messages(websocket, client_id):
     try:
         async for message in websocket:
             data = json.loads(message)
-
-            if data["type"] == "hello":
-                public_key = data["public-key"]
-                client_id = data["fingerprint"]
-
-                if not any(client["client-id"] == client_id for client in connected_clients):
-                    connected_clients.append({
-                        "client-id": client_id,
-                        "public-key": public_key,
-                        "websocket": websocket,
-                        "parent_server": server_id
-                    })
-                    print(f"Client added: {client_id} from {server_id}")
-
-                    await update_clients_to_servers()
-
-                response = {"type": "ack", "message": "Hello received, connection established!"}
-                await websocket.send(json.dumps(response))
-
-            elif data["type"] == "public_chat":
-
-                chat_message = {
-                    "type": "public_chat",
-                    "from": data["from"],
-                    "message": data["message"],
-                    "parent_server": server_id
-                }
-                await broadcast_message_to_clients(chat_message)
-                await forward_to_servers(chat_message)
-
+            if data['type'] == 'public_chat':
+                # Add origin server ID to the message
+                data['origin_server'] = server_id
+                # Broadcast to local clients
+                await broadcast_to_clients(data)
+                # Forward to other servers
+                await forward_to_servers(data)
+            else:
+                print(f"Unknown message type from client {client_id}: {data['type']}")
     except websockets.ConnectionClosed:
-        print(f"Client disconnected: {websocket.remote_address}")
-        connected_clients[:] = [client for client in connected_clients if client["websocket"] != websocket]
-        await update_clients_to_servers()
+        print(f"Client {client_id} disconnected.")
+        # Remove client from connected_clients
+        connected_clients[:] = [c for c in connected_clients if c['client_id'] != client_id]
 
-
-### MESH SERVER FUNCTIONS ###
-
-# Connect to all servers in the mesh network
-async def connect_to_servers():
-    for server_uri in server_list:
-        if server_uri not in server_connections:
-            print(f"Attepmpting to connect to {server_uri}...")
-            await connect_to_server(server_uri)
-
-async def connect_to_server(server_uri):
-    try:
-        websocket = await websockets.connect(server_uri)
-        server_connections[server_uri] = websocket
-        print(f"Connected to server: {server_uri}")
-
-        # Send initial message to indicate this is a server connection
-        initial_message = {"type": "server_hello", "server_id": server_id}
-        await websocket.send(json.dumps(initial_message))
-
-        # Start a task to handle incoming messages from this server
-        asyncio.create_task(handle_server_connection(websocket, server_uri))
-
-    except Exception as e:
-        print(f"Failed to connect to {server_uri}, error: {e}")
-        print("Retrying...")
-        await reconnect_to_server(server_uri)
-
-# Handle server connections
-async def handle_server_connection(websocket, server_uri):
+# Handle messages from servers
+async def handle_server_messages(websocket, sid):
     try:
         async for message in websocket:
-            await handle_server_message(message)
+            data = json.loads(message)
+            if data['type'] == 'public_chat':
+                if data.get('origin_server') == server_id:
+                    # Ignore messages originating from this server
+                    continue
+                # Broadcast to local clients
+                await broadcast_to_clients(data)
+                # Forward to other servers excluding the sender
+                await forward_to_servers(data, exclude_server=sid)
+            else:
+                print(f"Unknown message type from server {sid}: {data['type']}")
     except websockets.ConnectionClosed:
-        print(f"Lost connection to server {server_uri}. Attempting to reconnect...")
-        await reconnect_to_server(server_uri)
+        print(f"Server {sid} disconnected.")
+        await handle_server_disconnection(sid)
 
-async def reconnect_to_server(server_uri):
-    while server_uri not in server_connections:
-        print(f"Reconnecting to {server_uri}...")
+# Handle disconnection of a server
+async def handle_server_disconnection(sid):
+    if sid in server_connections:
+        uri = server_connections[sid]['uri']
+        del server_connections[sid]
+        # Attempt to reconnect
+        asyncio.create_task(reconnect_to_server(uri, sid))
+
+# Reconnect to a server
+async def reconnect_to_server(uri, sid):
+    while True:
         try:
-            await connect_to_server(server_uri)
+            print(f"Attempting to reconnect to server {sid} at {uri}")
+            websocket = await websockets.connect(uri)
+            # Perform handshake
+            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id}))
+            response = await websocket.recv()
+            data = json.loads(response)
+            if data['type'] == 'server_hello':
+                if data['server_id'] != sid:
+                    print(f"Server ID mismatch. Expected {sid}, got {data['server_id']}")
+                    await websocket.close()
+                    continue
+                server_connections[sid] = {'websocket': websocket, 'uri': uri}
+                print(f"Reconnected to server {sid} at {uri}")
+                # Start handling messages
+                asyncio.create_task(handle_server_messages(websocket, sid))
+                break
+            else:
+                print(f"Invalid handshake response from server {sid}")
+                await websocket.close()
         except Exception as e:
-            print(f"Failed to reconnect to {server_uri}: {e}")
-        await asyncio.sleep(5)
+            print(f"Failed to reconnect to server {sid}: {e}")
+            await asyncio.sleep(5)  # Wait before retrying
 
-# Start the WebSocket server
+# Accept incoming connections
+async def accept_connection(websocket, path):
+    try:
+        # Expect an initial message to determine the connection type
+        message = await websocket.recv()
+        data = json.loads(message)
+        if data['type'] == 'hello':
+            # Client connection
+            client_id = data['fingerprint']
+            connected_clients.append({'client_id': client_id, 'websocket': websocket})
+            print(f"Client {client_id} connected.")
+            # Send acknowledgment
+            await websocket.send(json.dumps({'type': 'ack', 'message': 'Connected to server'}))
+            # Start handling client messages
+            await handle_client_messages(websocket, client_id)
+        elif data['type'] == 'server_hello':
+            # Server connection
+            sid = data['server_id']
+            # Send back our server_hello
+            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id}))
+            server_connections[sid] = {'websocket': websocket, 'uri': None}
+            print(f"Server {sid} connected.")
+            # Start handling server messages
+            await handle_server_messages(websocket, sid)
+        else:
+            print(f"Unknown connection type: {data['type']}")
+            await websocket.close()
+    except websockets.ConnectionClosed:
+        print("Connection closed before handshake.")
+    except Exception as e:
+        print(f"Error during connection: {e}")
+        await websocket.close()
+
+# Connect to other servers
+async def connect_to_other_servers(server_list):
+    for uri in server_list:
+        asyncio.create_task(connect_to_server(uri))
+
+# Connect to a server
+async def connect_to_server(uri):
+    while True:
+        try:
+            print(f"Connecting to server at {uri}")
+            websocket = await websockets.connect(uri)
+            # Send server_hello
+            await websocket.send(json.dumps({'type': 'server_hello', 'server_id': server_id}))
+            # Receive server_hello
+            response = await websocket.recv()
+            data = json.loads(response)
+            if data['type'] == 'server_hello':
+                sid = data['server_id']
+                server_connections[sid] = {'websocket': websocket, 'uri': uri}
+                print(f"Connected to server {sid} at {uri}")
+                # Start handling server messages
+                asyncio.create_task(handle_server_messages(websocket, sid))
+                break
+            else:
+                print(f"Invalid handshake response from server at {uri}")
+                await websocket.close()
+        except Exception as e:
+            print(f"Failed to connect to server at {uri}: {e}")
+            await asyncio.sleep(5)  # Wait before retrying
+
+# Main function to start the server
 async def start_server():
-    global server_list
-    host_port = input("Server Port: ") #23451
+    global server_id
+    # Get server details from the user
+    host_port = input("Server Port: ")
     server_id = input("Server ID: ")
-    neighbour_servers = input("Server Connections: ")
+    neighbour_servers = input("Server Connections (space-separated URIs): ")
 
-    server_list = neighbour_servers.split()
+    # Parse neighbour server URIs
+    server_list = neighbour_servers.strip().split()
     server_list = ["ws://localhost:" + port for port in server_list]
-    print(server_list)
 
-    server = await websockets.serve(hello_handler, "localhost", host_port)
-    print(f"WebSocket server started on ws://localhost:{host_port} (Server ID: {server_id})")
+    # Start the server to accept incoming connections
+    server = await websockets.serve(accept_connection, 'localhost', int(host_port))
+    print(f"Server {server_id} started on port {host_port}")
 
-    await connect_to_servers()
-    await server.wait_closed()
+    # Connect to other servers
+    asyncio.create_task(connect_to_other_servers(server_list))
 
-# Run the server
-asyncio.get_event_loop().run_until_complete(start_server())
-asyncio.get_event_loop().run_forever()
+    # Keep the server running
+    await asyncio.Future()  # Run forever
+
+# Entry point
+if __name__ == "__main__":
+    try:
+        asyncio.run(start_server())
+    except KeyboardInterrupt:
+        print("Server shutting down.")
