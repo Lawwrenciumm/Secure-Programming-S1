@@ -1,14 +1,10 @@
 import json
 import asyncio
 import websockets
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.backends import default_backend
 
 connected_clients = []
 server_connections = {}  # Dictionary to track connections to other servers by their URI
-server_list = ["ws://localhost:23452"]  # Update with actual server URIs in the mesh
-server_id = "server-1"  # Unique ID for this server (replace with a unique ID per server)
+server_id = 0
 
 # Broadcast a message to all connected clients
 async def broadcast_message_to_clients(message):
@@ -52,16 +48,11 @@ async def handle_server_message(message):
     
     # Handle public chat message
     if data["type"] == "public_chat":
-        counter = data.get("counter", 0)
-        if counter > 1:
-            print(f"Message from {data['from']} reached forwarding limit. Ignoring further propagation.")
-            return
 
         chat_message = {
             "type": "public_chat",
             "from": data["from"],
             "message": data["message"],
-            "counter": counter + 1,
             "parent_server": server_id
         }
         print(f"Public message from {data['from']} on {server_id}: {data['message']}")
@@ -74,48 +65,6 @@ async def handle_server_message(message):
 
     elif data["type"] == "client_list_update":
         print(f"Received client list update from {data['server_id']}")
-
-# Handle server connections
-async def handle_server_connection(websocket, server_uri):
-    try:
-        async for message in websocket:
-            await handle_server_message(message)
-    except websockets.ConnectionClosed:
-        print(f"Lost connection to server {server_uri}. Attempting to reconnect...")
-        await reconnect_to_server(server_uri)
-
-async def connect_to_server(server_uri):
-    try:
-        websocket = await websockets.connect(server_uri)
-        server_connections[server_uri] = websocket
-        print(f"Connected to server: {server_uri}")
-
-        # Send initial message to indicate this is a server connection
-        initial_message = {"type": "server_hello", "server_id": server_id}
-        await websocket.send(json.dumps(initial_message))
-
-        # Start a task to handle incoming messages from this server
-        asyncio.create_task(handle_server_connection(websocket, server_uri))
-
-    except Exception as e:
-        print(f"Failed to connect to {server_uri}, error: {e}")
-
-# Attempt to reconnect to a server if connection is lost
-async def reconnect_to_server(server_uri):
-    while server_uri not in server_connections:
-        print(f"Reconnecting to {server_uri}...")
-        try:
-            await connect_to_server(server_uri)
-        except Exception as e:
-            print(f"Failed to reconnect to {server_uri}: {e}")
-        await asyncio.sleep(5)  # Wait before retrying
-
-
-# Connect to all servers in the mesh network
-async def connect_to_servers():
-    for server_uri in server_list:
-        if server_uri not in server_connections:
-            await connect_to_server(server_uri)
 
 # Handle client connection
 async def hello_handler(websocket, path):
@@ -142,16 +91,11 @@ async def hello_handler(websocket, path):
                 await websocket.send(json.dumps(response))
 
             elif data["type"] == "public_chat":
-                counter = data.get("counter", 0)
-                if counter > 1:
-                    print(f"Message from {data['from']} reached forwarding limit. Ignoring further propagation.")
-                    return
 
                 chat_message = {
                     "type": "public_chat",
                     "from": data["from"],
                     "message": data["message"],
-                    "counter": counter + 1,
                     "parent_server": server_id
                 }
                 await broadcast_message_to_clients(chat_message)
@@ -162,10 +106,66 @@ async def hello_handler(websocket, path):
         connected_clients[:] = [client for client in connected_clients if client["websocket"] != websocket]
         await update_clients_to_servers()
 
+
+### MESH SERVER FUNCTIONS ###
+
+# Connect to all servers in the mesh network
+async def connect_to_servers():
+    for server_uri in server_list:
+        if server_uri not in server_connections:
+            print(f"Attepmpting to connect to {server_uri}...")
+            await connect_to_server(server_uri)
+
+async def connect_to_server(server_uri):
+    try:
+        websocket = await websockets.connect(server_uri)
+        server_connections[server_uri] = websocket
+        print(f"Connected to server: {server_uri}")
+
+        # Send initial message to indicate this is a server connection
+        initial_message = {"type": "server_hello", "server_id": server_id}
+        await websocket.send(json.dumps(initial_message))
+
+        # Start a task to handle incoming messages from this server
+        asyncio.create_task(handle_server_connection(websocket, server_uri))
+
+    except Exception as e:
+        print(f"Failed to connect to {server_uri}, error: {e}")
+        print("Retrying...")
+        await reconnect_to_server(server_uri)
+
+# Handle server connections
+async def handle_server_connection(websocket, server_uri):
+    try:
+        async for message in websocket:
+            await handle_server_message(message)
+    except websockets.ConnectionClosed:
+        print(f"Lost connection to server {server_uri}. Attempting to reconnect...")
+        await reconnect_to_server(server_uri)
+
+async def reconnect_to_server(server_uri):
+    while server_uri not in server_connections:
+        print(f"Reconnecting to {server_uri}...")
+        try:
+            await connect_to_server(server_uri)
+        except Exception as e:
+            print(f"Failed to reconnect to {server_uri}: {e}")
+        await asyncio.sleep(5)
+
 # Start the WebSocket server
 async def start_server():
-    server = await websockets.serve(hello_handler, "localhost", 23451)
-    print(f"WebSocket server started on ws://localhost:23451 (Server ID: {server_id})")
+    global server_list
+    host_port = input("Server Port: ") #23451
+    server_id = input("Server ID: ")
+    neighbour_servers = input("Server Connections: ")
+
+    server_list = neighbour_servers.split()
+    server_list = ["ws://localhost:" + port for port in server_list]
+    print(server_list)
+
+    server = await websockets.serve(hello_handler, "localhost", host_port)
+    print(f"WebSocket server started on ws://localhost:{host_port} (Server ID: {server_id})")
+
     await connect_to_servers()
     await server.wait_closed()
 
