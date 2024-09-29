@@ -144,11 +144,7 @@ async def handle_user_input(websocket, from_client, client_id):
     while True:
         message = await loop.run_in_executor(None, sys.stdin.readline)
         message = message.strip()
-        if message.lower() == '/exit':
-            print("Exiting chat...")
-            await websocket.close()
-            sys.exit()
-        elif message.lower() == '/disconnect':
+        if message.lower() == '/disconnect':
             print("Disconnecting from server...")
 
             # Send a disconnect message to the server
@@ -160,7 +156,7 @@ async def handle_user_input(websocket, from_client, client_id):
             await websocket.send(json.dumps(disconnect_message))
             
             await websocket.close()  # Close WebSocket connection
-            break  # Stop the input loop and disconnect from server
+            sys.exit()  # Stop the input loop and disconnect from server
 
         elif message.lower() == '/clients':
             # Request the list of online clients
@@ -323,7 +319,6 @@ async def main():
     print("/clients                 see all online users")
     print("/msg <id> <message>      private message")
     print("/disconnect              disconnect from server")
-    print("/exit                    exit program")
     print("/upload <file_path>      uploads file")
     print("/download <file_name>    downloads file")
     async with websockets.connect(uri) as websocket:

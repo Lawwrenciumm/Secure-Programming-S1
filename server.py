@@ -31,6 +31,7 @@ async def forward_to_servers(message, exclude_server=None):
         websocket = conn_info['websocket']
         try:
             await websocket.send(json.dumps(message))
+            print("Forwading message to global: ", message)
         except websockets.ConnectionClosed:
             print(f"Connection to server {sid} lost.")
             # Handle reconnection
@@ -87,12 +88,16 @@ async def handle_client_messages(websocket, client_id):
                     'clients': client_list,
                 }
                 await websocket.send(json.dumps(response))
-
+            elif data['type'] == 'client_disconnect':
+                print(f"Client {client_id} requested disconnect.")
             else:
                 print(f"Unknown message type from client {client_id}: {data['type']}")
     except websockets.ConnectionClosed:
-        print(f"Client {client_id} disconnected.")
-        # Remove client from connected_clients and global_clients
+        print(f"Client {client_id} disconnected (ConnectionClosed).")
+    except Exception as e:
+        print(f"Exception in handle_client_messages for client {client_id}: {e}")
+    finally:
+        # Clean up client data
         if client_id in connected_clients:
             del connected_clients[client_id]
         if client_id in global_clients:
