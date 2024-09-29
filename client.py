@@ -180,7 +180,7 @@ async def handle_user_input(websocket, from_client, client_id):
                 _, file_path = message.split(maxsplit=1)
 
                 # Execute the curl command to upload the file
-                curl_command = ['curl', '-F', f'file=@{file_path}', 'http://localhost:23456/api/upload']
+                curl_command = ['curl', '-F', f'file=@{file_path}', f'http://{file_server}/api/upload']
                 result = subprocess.run(curl_command, capture_output=True, text=True)
 
                 # Check if the curl command was successful
@@ -198,7 +198,7 @@ async def handle_user_input(websocket, from_client, client_id):
                 _, file_name = message.split(maxsplit=1)
                 
                 # Specify the URL for the file download
-                download_url = f"http://localhost:23456/api/download/{file_name}"
+                download_url = f"http://{file_server}/api/download/{file_name}"
                 
                 # Execute the curl command to download the file
                 curl_command = ['curl', '-o', file_name, download_url]
@@ -286,6 +286,7 @@ async def handle_incoming_messages(websocket):
 
 # Client's main function
 async def main():
+    global file_server
     startup = False
     while not startup:
         startup_option = input("Enter Preset Number or manual: ").strip()
@@ -298,7 +299,8 @@ async def main():
             startup = True
 
         elif startup_option.lower() == "manual":
-            uri = input("Enter URI: ").strip()
+            file_server = input("Enter <ip-address>:<port>: ")
+            uri = f"ws://{file_server}"
             startup = True
 
         else:
