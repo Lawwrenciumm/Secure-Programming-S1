@@ -48,7 +48,7 @@ To connect to custom uri, it should be the same uri as your server setup, in the
 
 Once chosen your setup, you will be prompted ```Enter your name: ```, just enter name you can remember, or your least favorite Itlian branded dog food. Leave it empty, and you shall be named ```Anonymous```.
 
-If you didn't fuck anything up, you client will be connected to the server by now. ```COMMANDS``` should appear in your terminal, most of them are self explanatory.
+If you didn't fuck anything up, your client will be connected to the server by now. ```COMMANDS``` should appear in your terminal, most of them are self explanatory.
 
 Start typing now to send message into public chat.
 
@@ -57,5 +57,5 @@ Start typing now to send message into public chat.
 
 To send a private message, use the command ```/clients``` to find another user that you want to harass, copy the string after ```ID: ```. Then use ```/msg <string-you-just-copied> <message>``` to send a private message.
 
-To upload a file to the server use the command ```/upload <path/to/file.txt>``` and when you would like to download that file off the server you can use the command ```/downlaod <file_name>```.
+To upload a file to the server, use the command ```/upload <path/to/file.txt>``` and when you would like to download that file off the server you can use the command ```/download <file_name>```.
 
