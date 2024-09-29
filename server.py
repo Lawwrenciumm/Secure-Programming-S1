@@ -371,39 +371,47 @@ async def connect_to_server(uri):
 # Main function to start the server
 async def start_server():
     global server_id, server_uri
+    host_ip = "localhost"
     # Get server details from the user
     startup = False
     while not startup:
         startup_option = input("Enter Preset Number or manual: ").strip()
         if startup_option == "1":
-            host_port = "23451"
+            host_address = "ws://localhost:23451"
             server_id = "1"
             neighbour_servers = "23452"
             startup = True
 
         elif startup_option == "2":
-            host_port = "23452"
+            host_address = "ws://localhost:23452"
             server_id = "2"
             neighbour_servers = "23451"
             startup = True
+        
+        elif startup_option == "3":
+            host_address = "ws://0.0.0.0:23451"
+            server_id = "0"
+            startup = True
 
         elif startup_option.lower() == "manual":
-            host_port = input("Server uri: ").strip()
+            host_ip = input("Server ip: ").strip()
+            host_port = input("Server port: ").strip()
+            host_address = f"ws://{host_ip}:{host_port}"
             server_id = input("Server ID: ").strip()
-            neighbour_servers = input("Server Connections (space-separated URIs): ").strip()
+            neighbour_servers = input("Server Connections (space-separated ports): ").strip()
             startup = True
 
         else:
             print("Invalid option.")
             
-    server_uri = f"ws://localhost:{host_port}"
+    server_uri = host_address
     
     # Parse neighbour server URIs
     server_list = neighbour_servers.strip().split()
     server_list = ["ws://localhost:" + port for port in server_list]
 
     # Start the server to accept incoming connections
-    server = await websockets.serve(accept_connection, 'localhost', int(host_port))
+    server = await websockets.serve(accept_connection, host_ip, int(host_port))
     print(f"Server {server_id} started on port {host_port}")
 
     # Start the HTTP server for file upload/download

@@ -156,7 +156,7 @@ async def handle_user_input(websocket, from_client, client_id):
             await websocket.send(json.dumps(disconnect_message))
             
             await websocket.close()  # Close WebSocket connection
-            sys.exit()  # Stop the input loop and disconnect from server
+            sys.exit() 
 
         elif message.lower() == '/clients':
             # Request the list of online clients
