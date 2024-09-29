@@ -6,6 +6,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
 import sys
 import os
+import aiohttp
+import subprocess
 from collections import deque
 import base64
 
@@ -112,56 +114,29 @@ async def send_private_message(websocket, from_client, client_id, recipient_id, 
     }
     await websocket.send(json.dumps(chat_message))
 
-
-# Function to upload a file to the server
-async def upload_file(websocket, file_path):
+# Function to upload a file via HTTP POST request
+async def upload_file_http(url, file_path):
     file_name = os.path.basename(file_path)
-    file_size = os.path.getsize(file_path)
+    
+    async with aiohttp.ClientSession() as session:
+        with open(file_path, 'rb') as f:
+            files = {'file': (file_name, f)}
+            async with session.post(url, data=files) as response:
+                if response.status == 200:
+                    print(f"File '{file_name}' uploaded successfully via HTTP.")
+                else:
+                    print(f"Failed to upload file '{file_name}' via HTTP. Status: {response.status}")
 
-    # Send a file upload message to the server
-    upload_message = {
-        "type": "file_upload",
-        "filename": file_name,
-        "file_size": file_size
-    }
-    await websocket.send(json.dumps(upload_message))
-
-    # Send the file in chunks
-    with open(file_path, 'rb') as f:
-        while True:
-            chunk = f.read(1024)  # Read in 1KB chunks
-            if not chunk:
-                break
-            await websocket.send(chunk)
-
-    print(f"File '{file_name}' uploaded successfully.")
-
-# Function to download a file from the server
-async def download_file(websocket, file_name):
-    download_message = {
-        "type": "file_download",
-        "filename": file_name
-    }
-    await websocket.send(json.dumps(download_message))
-
-    # Wait for acknowledgment with file size
-    response = await websocket.recv()
-    data = json.loads(response)
-
-    if data['type'] == 'file_download_ack':
-        file_size = data['file_size']
-        print(f"Starting download of '{file_name}' ({file_size} bytes)")
-
-        with open(file_name, 'wb') as f:
-            bytes_received = 0
-            while bytes_received < file_size:
-                chunk = await websocket.recv()
-                f.write(chunk)
-                bytes_received += len(chunk)
-
-        print(f"File '{file_name}' downloaded successfully.")
-    else:
-        print(f"Error: {data.get('message', 'Failed to download file')}")
+# Function to download a file via HTTP GET request
+async def download_file_http(url, file_name):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status == 200:
+                with open(file_name, 'wb') as f:
+                    f.write(await response.read())
+                print(f"File '{file_name}' downloaded successfully via HTTP.")
+            else:
+                print(f"Failed to download file '{file_name}' via HTTP. Status: {response.status}")
 
 # Handle user input from the console
 async def handle_user_input(websocket, from_client, client_id):
@@ -191,12 +166,44 @@ async def handle_user_input(websocket, from_client, client_id):
             await send_private_message(websocket, from_client, client_id, recipient_id, private_message)
                 
         elif message.lower().startswith('/upload'):
-            _, file_path = message.split(maxsplit=1)
-            request_queue.append(('upload', file_path))  # Add upload request to the queue
+            try:
+                _, file_path = message.split(maxsplit=1)
+
+                # Execute the curl command to upload the file
+                curl_command = ['curl', '-F', f'file=@{file_path}', 'http://localhost:8080/api/upload']
+                result = subprocess.run(curl_command, capture_output=True, text=True)
+
+                # Check if the curl command was successful
+                if result.returncode == 0:
+                    print(f"File '{file_path}' uploaded successfully.")
+                    print(f"Response: {result.stdout}")
+                else:
+                    print(f"File upload failed with error: {result.stderr}")
+
+            except Exception as e:
+                print(f"Error handling upload command: {e}")
 
         elif message.lower().startswith('/download'):
-            _, file_name = message.split(maxsplit=1)
-            request_queue.append(('download', file_name))  # Add download request to the queue
+            try:
+                _, file_name = message.split(maxsplit=1)
+                
+                # Specify the URL for the file download
+                download_url = f"http://localhost:8080/api/download/{file_name}"
+                
+                # Execute the curl command to download the file
+                curl_command = ['curl', '-o', file_name, download_url]
+                result = subprocess.run(curl_command, capture_output=True, text=True)
+
+                # Check if the curl command was successful
+                if result.returncode == 0:
+                    print(f"File '{file_name}' downloaded successfully.")
+                    print(f"Response: {result.stdout}")
+                else:
+                    print(f"File download failed with error: {result.stderr}")
+
+            except Exception as e:
+                print(f"Error handling download command: {e}")
+                
         elif message:
             await send_public_message(websocket, from_client, message)
 
@@ -234,6 +241,18 @@ async def handle_incoming_messages(websocket):
                     name_to_id_map[client['name']] = client['id']
                     client_public_keys[client['id']] = client['public_key']
                     
+            elif data["type"] == "file_upload_url":
+                # Server provided an upload URL, initiate HTTP upload
+                upload_url = data["url"]
+                file_path = data["file_path"]
+                await upload_file_http(upload_url, file_path)
+            
+            elif data["type"] == "file_download_url":
+                # Server provided a download URL, initiate HTTP download
+                download_url = data["url"]
+                file_name = data["filename"]
+                await download_file_http(download_url, file_name)
+
             elif data["type"] == "file_upload_ack":
                 print(f"Server: {data['message']}")
 
@@ -242,13 +261,14 @@ async def handle_incoming_messages(websocket):
 
             else:
                 print(f"Received unknown message type: {data}")
-             # Handle queued requests for upload/download
+            # Handle queued requests for upload/download
             if request_queue:
                 operation, file_param = request_queue.popleft()
                 if operation == 'upload':
-                    await upload_file(websocket, file_param)
+                    await websocket.send(json.dumps({"type": "file_upload_request", "file_path": file_param}))
                 elif operation == 'download':
-                    await download_file(websocket, file_param)
+                    await websocket.send(json.dumps({"type": "file_download_request", "filename": file_param}))
+
                     
     except websockets.ConnectionClosed:
         print("Connection closed by the server.")

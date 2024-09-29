@@ -2,6 +2,7 @@ import json
 import asyncio
 import websockets
 import os
+from aiohttp import web
 
 # Global Variables
 connected_clients = {}      # Local clients connected to this server
@@ -51,9 +52,9 @@ async def handle_client_messages(websocket, client_id):
                 await forward_to_servers(data)
             
             elif data['type'] == 'file_upload':
-                await handle_file_upload(websocket, data, client_id)
+                await upload_file(websocket, data, client_id)
             elif data['type'] == 'file_download':
-                await handle_file_download(websocket, data, client_id)
+                await download_file(websocket, data, client_id)
                 
             elif data['type'] == 'private_chat':
                 recipient_id = data.get('to')
@@ -104,42 +105,52 @@ async def handle_client_messages(websocket, client_id):
             }
             await forward_to_servers(client_disconnect_message)
 
-# Handle file upload from a client
-async def handle_file_upload(websocket, data, client_id):
-    filename = data['filename']
-    file_size = data['file_size']
-
-    # Prepare to receive the file
-    with open(os.path.join(UPLOAD_DIR, filename), 'wb') as f:
-        bytes_received = 0
-        while bytes_received < file_size:
-            chunk = await websocket.recv()
-            f.write(chunk)
-            bytes_received += len(chunk)
+# Handle HTTP POST request for file uploads
+async def upload_file(request):
+    reader = await request.multipart()
+    field = await reader.next()
     
-    print(f"File '{filename}' uploaded by {client_id}.")
-    # Acknowledge the upload
-    await websocket.send(json.dumps({'type': 'file_upload_ack', 'message': 'File uploaded successfully'}))
-
-# Handle file download requests
-async def handle_file_download(websocket, data, client_id):
-    filename = data['filename']
+    filename = field.filename
     file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    # Write the file to disk
+    with open(file_path, 'wb') as f:
+        while True:
+            chunk = await field.read_chunk()  # 8192 bytes by default
+            if not chunk:
+                break
+            f.write(chunk)
+    
+    # Return a unique file URL for download
+    file_url = f"http://{request.host}/api/download/{filename}"
+    return web.json_response({"file_url": file_url})
 
+# Handle HTTP GET request for file downloads
+async def download_file(request):
+    filename = request.match_info['filename']
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
     if os.path.isfile(file_path):
-        # Send file size first
-        file_size = os.path.getsize(file_path)
-        await websocket.send(json.dumps({'type': 'file_download_ack', 'file_size': file_size}))
-
-        # Send the file in chunks
-        with open(file_path, 'rb') as f:
-            while (chunk := f.read(1024)):  # Read in 1KB chunks
-                await websocket.send(chunk)
-        
-        print(f"File '{filename}' sent to {client_id}.")
+        return web.FileResponse(file_path)
     else:
-        print(f"File '{filename}' not found for {client_id}.")
-        await websocket.send(json.dumps({'type': 'file_download_nack', 'message': 'File not found'}))
+        return web.json_response({"error": "File not found"}, status=404)
+
+
+# Set up HTTP server routes for upload and download
+def setup_http_routes(app):
+    app.router.add_post('/api/upload', upload_file)
+    app.router.add_get('/api/download/{filename}', download_file)
+
+# Start the HTTP server for file uploads and downloads
+async def start_http_server():
+    app = web.Application()
+    setup_http_routes(app)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, 'localhost', 8080)  # HTTP server running on port 8080
+    await site.start()
+    print("HTTP server started on http://localhost:8080")
+
 
 # Handle messages from servers
 async def handle_server_messages(websocket, sid):
@@ -379,6 +390,8 @@ async def start_server():
 
         else:
             print("Invalid option.")
+            
+    server_uri = f"ws://localhost:{host_port}"
     
     # Parse neighbour server URIs
     server_list = neighbour_servers.strip().split()
@@ -387,6 +400,9 @@ async def start_server():
     # Start the server to accept incoming connections
     server = await websockets.serve(accept_connection, 'localhost', int(host_port))
     print(f"Server {server_id} started on port {host_port}")
+
+    # Start the HTTP server for file upload/download
+    asyncio.create_task(start_http_server())
 
     # Connect to other servers
     asyncio.create_task(connect_to_other_servers(server_list))
