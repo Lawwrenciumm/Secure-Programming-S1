@@ -372,15 +372,13 @@ async def start_server():
             startup = True
 
         elif startup_option.lower() == "manual":
-            host_port = input("Server Port: ").strip()
+            host_port = input("Server uri: ").strip()
             server_id = input("Server ID: ").strip()
             neighbour_servers = input("Server Connections (space-separated URIs): ").strip()
             startup = True
 
         else:
             print("Invalid option.")
-
-    server_uri = f"ws://localhost:{host_port}"
     
     # Parse neighbour server URIs
     server_list = neighbour_servers.strip().split()
