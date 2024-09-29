@@ -152,7 +152,7 @@ async def start_http_server():
     setup_http_routes(app)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, 'localhost', 8080)  # HTTP server running on port 8080
+    site = web.TCPSite(runner, '0.0.0.0', 8080)  # HTTP server running on port 8080
     await site.start()
     print("HTTP server started on http://localhost:8080")
 
@@ -378,19 +378,23 @@ async def start_server():
         startup_option = input("Enter Preset Number or manual: ").strip()
         if startup_option == "1":
             host_address = "ws://localhost:23451"
+            host_port = "23451"
             server_id = "1"
             neighbour_servers = "23452"
             startup = True
 
         elif startup_option == "2":
             host_address = "ws://localhost:23452"
+            host_port = "23451"
             server_id = "2"
             neighbour_servers = "23451"
             startup = True
         
         elif startup_option == "3":
             host_address = "ws://0.0.0.0:23451"
+            host_port = "23451"
             server_id = "0"
+            neighbour_servers = ""
             startup = True
 
         elif startup_option.lower() == "manual":
