@@ -72,14 +72,21 @@ async def handle_client_messages(websocket, client_id):
                         print(f"Recipient's server {recipient_server_id} is not connected.")
                 else:
                     print(f"Recipient {recipient_id} not found.")
+
             elif data['type'] == 'client_list_request':
-                # Prepare the client list
-                client_list = [{'id': c['client_id'], 'name': c['name']} for c in global_clients.values()]
+                client_list = [
+                    {
+                        'id': c['client_id'],
+                        'name': c['name'],
+                        'public_key': c['public_key']
+                    } for c in global_clients.values()
+                ]
                 response = {
                     'type': 'client_list',
                     'clients': client_list,
                 }
                 await websocket.send(json.dumps(response))
+
             else:
                 print(f"Unknown message type from client {client_id}: {data['type']}")
     except websockets.ConnectionClosed:
@@ -171,10 +178,12 @@ async def handle_server_messages(websocket, sid):
                 client_id = data['client_id']
                 client_name = data['name']
                 server_of_client = data['server_id']
+                client_public_key_pem = data.get('public_key')
                 global_clients[client_id] = {
                     'client_id': client_id,
                     'name': client_name,
-                    'server_id': server_of_client
+                    'server_id': server_of_client,
+                    'public_key': client_public_key_pem
                 }
                 print(f"Client {client_name} ({client_id}) connected on server {server_of_client}.")
             elif data['type'] == 'client_disconnect':
@@ -244,22 +253,32 @@ async def reconnect_to_server(uri, sid):
 # Accept incoming connections
 async def accept_connection(websocket, path):
     try:
-        # Expect an initial message to determine the connection type
         message = await websocket.recv()
         data = json.loads(message)
         if data['type'] == 'hello':
-            # Client connection
             client_id = data['fingerprint']
             client_name = data.get('name', 'Unknown')
-            connected_clients[client_id] = {'client_id': client_id, 'websocket': websocket, 'name': client_name}
-            global_clients[client_id] = {'client_id': client_id, 'name': client_name, 'server_id': server_id}
+            client_public_key_pem = data.get('public-key')  # Get the public key
+            connected_clients[client_id] = {
+                'client_id': client_id,
+                'websocket': websocket,
+                'name': client_name,
+                'public_key': client_public_key_pem
+            }
+            global_clients[client_id] = {
+                'client_id': client_id,
+                'name': client_name,
+                'server_id': server_id,
+                'public_key': client_public_key_pem
+            }
             print(f"Client {client_name} ({client_id}) connected.")
             # Notify other servers about the new client
             client_connect_message = {
                 'type': 'client_connect',
                 'client_id': client_id,
                 'name': client_name,
-                'server_id': server_id
+                'server_id': server_id,
+                'public_key': client_public_key_pem  # Include public key
             }
             await forward_to_servers(client_connect_message)
             # Send acknowledgment

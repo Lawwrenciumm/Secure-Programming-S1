@@ -7,6 +7,7 @@ from cryptography.hazmat.backends import default_backend
 import sys
 import os
 from collections import deque
+import base64
 
 # Queue to handle specific requests like client list and file operations
 request_queue = deque()
@@ -14,8 +15,12 @@ request_queue = deque()
 # Mapping from names to client IDs (for convenience)
 name_to_id_map = {}
 
+# At the top of client.py
+client_public_keys = {}  # Mapping from client_id to public key
+
 # Generate RSA key pair for the client
 def generate_key_pair():
+    global private_key, public_key
     private_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048,
@@ -30,6 +35,39 @@ def serialize_public_key(public_key):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode('utf-8')
+
+def encrypt_message(message, recipient_public_key_pem):
+    # Load the recipient's public key
+    recipient_public_key = serialization.load_pem_public_key(
+        recipient_public_key_pem.encode('utf-8'),
+        backend=default_backend()
+    )
+    # Encrypt the message
+    ciphertext = recipient_public_key.encrypt(
+        message.encode('utf-8'),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    # Encode the ciphertext in Base64 to send over JSON
+    ciphertext_b64 = base64.b64encode(ciphertext).decode('utf-8')
+    return ciphertext_b64
+
+def decrypt_message(ciphertext_b64, private_key):
+    # Decode the Base64 encoded ciphertext
+    ciphertext = base64.b64decode(ciphertext_b64)
+    # Decrypt the message
+    plaintext = private_key.decrypt(
+        ciphertext,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    return plaintext.decode('utf-8')
 
 # Send the 'hello' message with the client's fingerprint and name
 async def send_hello_message(websocket, fingerprint_hex, public_key, from_client):
@@ -58,14 +96,22 @@ async def send_public_message(websocket, from_client, message):
 
 # Send a private chat message
 async def send_private_message(websocket, from_client, client_id, recipient_id, message):
+    # Get the recipient's public key
+    recipient_public_key_pem = client_public_keys.get(recipient_id)
+    if not recipient_public_key_pem:
+        print(f"Public key for recipient {recipient_id} not found.")
+        return
+    # Encrypt the message
+    encrypted_message = encrypt_message(message, recipient_public_key_pem)
     chat_message = {
         "type": "private_chat",
         "from": from_client,
         "from_id": client_id,
         "to": recipient_id,
-        "message": message,
+        "message": encrypted_message,
     }
     await websocket.send(json.dumps(chat_message))
+
 
 # Function to upload a file to the server
 async def upload_file(websocket, file_path):
@@ -131,17 +177,18 @@ async def handle_user_input(websocket, from_client, client_id):
             # Request the list of online clients
             await websocket.send(json.dumps({'type': 'client_list_request'}))
         elif message.startswith('/msg '):
-            # Send a private message
-            try:
-                parts = message.split(' ', 2)
-                if len(parts) < 3:
-                    print("Usage: /msg recipient_id message")
-                    continue
-                recipient_id = parts[1]
-                private_message = parts[2]
-                await send_private_message(websocket, from_client, client_id, recipient_id, private_message)
-            except Exception as e:
-                print(f"Error sending private message: {e}")
+            parts = message.split(' ', 2)
+            if len(parts) < 3:
+                print("Usage: /msg <recipient_id> <message>")
+                continue
+            recipient_id = parts[1]
+            private_message = parts[2]
+            if recipient_id not in client_public_keys:
+                print(f"Public key for recipient {recipient_id} not found. Requesting client list...")
+                await websocket.send(json.dumps({'type': 'client_list_request'}))
+                # Wait briefly to receive the client list
+                await asyncio.sleep(1)
+            await send_private_message(websocket, from_client, client_id, recipient_id, private_message)
                 
         elif message.lower().startswith('/upload'):
             _, file_path = message.split(maxsplit=1)
@@ -167,8 +214,14 @@ async def handle_incoming_messages(websocket):
 
             elif data["type"] == "private_chat":
                 sender = data.get("from", "Unknown")
-                msg = data.get("message", "")
-                print(f"\n[Private] {sender}: {msg}")
+                encrypted_msg = data.get("message", "")
+                # Decrypt the message
+                try:
+                    print("Encrypted Message: ", encrypted_msg)
+                    decrypted_msg = decrypt_message(encrypted_msg, private_key)
+                    print(f"\n[Private] {sender}: {decrypted_msg}")
+                except Exception as e:
+                    print(f"\n[Private] {sender}: [Unable to decrypt message]")
 
             elif data["type"] == "ack":
                 print(f"Server: {data['message']}")
@@ -179,6 +232,7 @@ async def handle_incoming_messages(websocket):
                 for client in clients:
                     print(f"- {client['name']} (ID: {client['id']})")
                     name_to_id_map[client['name']] = client['id']
+                    client_public_keys[client['id']] = client['public_key']
                     
             elif data["type"] == "file_upload_ack":
                 print(f"Server: {data['message']}")
