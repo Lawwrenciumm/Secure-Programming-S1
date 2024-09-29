@@ -1,0 +1,59 @@
+# Secure Communication Application
+**Python source code for Advanced Secure Protocol Design, Implementation and Review.** <br /><br />
+University of Adelaide | Secure Programming 3307 
+
+
+# Usage
+The code is written with python, install python through your preferred source if needed.
+
+Too lazy? Just download from [Python.org](https://www.python.org/).
+
+> [!IMPORTANT]
+> websockets and cryptography are required libraries. No, it is not negotiable.
+
+Install the required libraries using the following command: <br />
+
+``` pip install websockets cryptography ```
+
+Once finished, proceed to run server and client files.
+
+## server.py
+
+Run the server by simpliy typing
+
+```python server.py``` 
+
+When prompted with ```Enter Preset Number or manual: ```, you can either enter a preset number or if you are feeling adventurous today, type ```manual``` for a custom setup. 
+
+> [!TIP]
+> For express testing, recommend using ```1``` for the first server, ```2``` for the second server.
+
+For custom setup, three options will be prompted, ```Server URI```, ```Server ID``` and ```Server Connections```, enter info accordingly.<br /><br />
+Server uri format is as following ```ws://<ip-address>:<port-number>```. For exmaple, the testing preset 1 is hosted at ```ws://localhost:23451```, preset 2 is hosted at ```ws://localhost:23452```.<br /><br />
+```Server ID``` option require every server to have its own, unquie ID. Preset 1 uses the id of ```1```, preset 2 uses the id of ```2```.<br /><br />
+```Server Connections``` requires input of other servers with a direct connection, according to the [OLAF/Neighbourhood protocol](https://github.com/xvk-64/2024-secure-programming-protocol). 
+
+## client.py
+
+Run the client file by using
+
+```python client.py``` 
+
+When prompted with ```Enter Preset Number or manual: ```, you can either enter a preset number or type ```manual``` for a custom setup. 
+
+> [!TIP]
+> Just like the server, for express testing, recommend using ```1``` to connect to server using preset 1, ```2``` to connect server using preset 2.
+
+To connect to custom uri, it should be the same uri as your server setup, in the format of ```ws://<ip-address>:<port-number>```.
+
+Once chosen your setup, you will be prompted ```Enter your name: ```, just enter name you can remember, or your least favorite Itlian branded dog food. Leave it empty, and you shall be named ```Anonymous```.
+
+If you didn't fuck anything up, you client will be connected to the server by now. ```COMMANDS``` should appear in your terminal, most of them are self explanatory.
+
+Start typing now to send message into public chat.
+
+> [!WARNING]
+> Everyone on the same and neighbouring server will see it!
+
+To send a private message, use the command ```/clients``` to find another user that you want to harass, copy the string after ```ID: ```. Then use ```/msg <string-you-just-copied> <message>``` to send a private message.
+
