@@ -57,3 +57,5 @@ Start typing now to send message into public chat.
 
 To send a private message, use the command ```/clients``` to find another user that you want to harass, copy the string after ```ID: ```. Then use ```/msg <string-you-just-copied> <message>``` to send a private message.
 
+To upload a file to the server use the command ```/upload <path/to/file.txt>``` and when you would like to download that file off the server you can use the command ```/downlaod <file_name>```.
+
