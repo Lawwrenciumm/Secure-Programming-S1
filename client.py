@@ -180,7 +180,7 @@ async def handle_user_input(websocket, from_client, client_id):
                 _, file_path = message.split(maxsplit=1)
 
                 # Execute the curl command to upload the file
-                curl_command = ['curl', '-F', f'file=@{file_path}', f'http://{file_server}/api/upload']
+                curl_command = ['curl', '-F', f'file=@{file_path}', 'http://localhost:8080/api/upload']
                 result = subprocess.run(curl_command, capture_output=True, text=True)
 
                 # Check if the curl command was successful
@@ -198,7 +198,7 @@ async def handle_user_input(websocket, from_client, client_id):
                 _, file_name = message.split(maxsplit=1)
                 
                 # Specify the URL for the file download
-                download_url = f"http://{file_server}/api/download/{file_name}"
+                download_url = f"http://localhost:8080/api/download/{file_name}"
                 
                 # Execute the curl command to download the file
                 curl_command = ['curl', '-o', file_name, download_url]
