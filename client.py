@@ -11,24 +11,48 @@ import subprocess
 from collections import deque
 import base64
 
-# Queue to handle specific requests like client list and file operations
 request_queue = deque()
-
-# Mapping from names to client IDs (for convenience)
 name_to_id_map = {}
+client_public_keys = {}
+trusted_clients = {}
 
-# At the top of client.py
-client_public_keys = {}  # Mapping from client_id to public key
-
-# Generate RSA key pair for the client
-def generate_key_pair():
-    global private_key, public_key
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
-    public_key = private_key.public_key()
+def load_or_generate_keypair():
+    if os.path.exists(private_key_file) and os.path.exists(public_key_file):
+        # Load the private key
+        with open(private_key_file, 'rb') as f:
+            private_key = serialization.load_pem_private_key(
+                f.read(),
+                password=None,  # Use a password if you encrypt the private key
+                backend=default_backend()
+            )
+        # Load the public key
+        with open(public_key_file, 'rb') as f:
+            public_key = serialization.load_pem_public_key(
+                f.read(),
+                backend=default_backend()
+            )
+        print("Loaded existing keypair from files.")
+    else:
+        # Generate a new keypair
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        public_key = private_key.public_key()
+        # Save the keys to files
+        with open(private_key_file, 'wb') as f:
+            f.write(private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()  # Use encryption if desired
+            ))
+        with open(public_key_file, 'wb') as f:
+            f.write(public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ))
+        print("Generated new keypair and saved to files.")
     return private_key, public_key
 
 # Serialize the public key to PEM format
@@ -37,6 +61,66 @@ def serialize_public_key(public_key):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode('utf-8')
+
+def normalize_pem(pem_str):
+    # Remove leading and trailing whitespace
+    pem_str = pem_str.strip()
+    # Ensure headers and footers are present
+    if not pem_str.startswith('-----BEGIN PUBLIC KEY-----'):
+        pem_str = '-----BEGIN PUBLIC KEY-----\n' + pem_str
+    if not pem_str.endswith('-----END PUBLIC KEY-----'):
+        pem_str = pem_str + '\n-----END PUBLIC KEY-----'
+    # Remove any extra blank lines
+    lines = pem_str.splitlines()
+    lines = [line.strip() for line in lines if line.strip()]
+    return '\n'.join(lines) + '\n'
+
+def are_keys_equal(key_pem1, key_pem2):
+    try:
+        key_pem1 = normalize_pem(key_pem1)
+        key_pem2 = normalize_pem(key_pem2)
+
+        key1 = serialization.load_pem_public_key(
+            key_pem1.encode('utf-8'),
+            backend=default_backend()
+        )
+        key2 = serialization.load_pem_public_key(
+            key_pem2.encode('utf-8'),
+            backend=default_backend()
+        )
+        return key1.public_numbers() == key2.public_numbers()
+    except Exception as e:
+        print(f"Error comparing keys: {e}")
+        return False
+
+def load_trusted_clients(filename='trusted_clients.txt'):
+    if not os.path.exists(filename):
+        print(f"Trusted clients file '{filename}' not found.")
+        return trusted_clients
+
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line == '-----BEGIN TRUSTED CLIENT-----':
+            i += 1
+            # Read the username
+            username = lines[i].strip()
+            i += 1
+            # Read the public key
+            public_key_lines = []
+            while i < len(lines) and lines[i].strip() != '-----END TRUSTED CLIENT-----':
+                public_key_lines.append(lines[i])
+                i += 1
+            public_key_pem = '\n'.join(public_key_lines).strip()
+            # Remove extra blank lines
+            public_key_pem = '\n'.join([line.strip() for line in public_key_pem.splitlines() if line.strip() != ''])
+            # Store the public key against the username
+            trusted_clients[username] = public_key_pem
+        i += 1
+    return trusted_clients
 
 def encrypt_message(message, recipient_public_key_pem):
     # Load the recipient's public key
@@ -96,13 +180,38 @@ async def send_public_message(websocket, from_client, message):
     }
     await websocket.send(json.dumps(chat_message))
 
-# Send a private chat message
 async def send_private_message(websocket, from_client, client_id, recipient_id, message):
     # Get the recipient's public key
     recipient_public_key_pem = client_public_keys.get(recipient_id)
     if not recipient_public_key_pem:
         print(f"Public key for recipient {recipient_id} not found.")
         return
+
+    # Get the recipient's name from the id
+    recipient_name = None
+    for name, cid in name_to_id_map.items():
+        if cid == recipient_id:
+            recipient_name = name
+            break
+
+    # Verify the recipient's public key against trusted clients
+    trusted_public_key_pem = trusted_clients.get(recipient_name)
+    if trusted_public_key_pem:
+        if not are_keys_equal(trusted_public_key_pem, recipient_public_key_pem):
+            print(f"WARNING: Recipient '{recipient_name}' public key does not match the trusted key.")
+            proceed = input("Do you still want to send the message? (yes/no): ").strip().lower()
+            if proceed != 'yes':
+                print("Message not sent.")
+                return
+        else:
+            print("[Public key verified, message sent.]")
+    else:
+        print(f"WARNING: Recipient '{recipient_name}' is not in your trusted clients.")
+        proceed = input("Do you still want to send the message? (yes/no): ").strip().lower()
+        if proceed != 'yes':
+            print("Message not sent.")
+            return
+
     # Encrypt the message
     encrypted_message = encrypt_message(message, recipient_public_key_pem)
     chat_message = {
@@ -113,6 +222,17 @@ async def send_private_message(websocket, from_client, client_id, recipient_id, 
         "message": encrypted_message,
     }
     await websocket.send(json.dumps(chat_message))
+
+def add_trusted_client(username, public_key_pem):
+    with open('trusted_clients.txt', 'a') as f:
+        f.write('\n-----BEGIN TRUSTED CLIENT-----\n')
+        f.write(f'{username}\n')
+        f.write(f'{public_key_pem}\n')
+        f.write('-----END TRUSTED CLIENT-----\n')
+    # Reload the trusted clients
+    global trusted_clients
+    trusted_clients = load_trusted_clients()
+    print(f"Added '{username}' to trusted clients.")
 
 # Function to upload a file via HTTP POST request
 async def upload_file_http(url, file_path):
@@ -213,6 +333,21 @@ async def handle_user_input(websocket, from_client, client_id):
 
             except Exception as e:
                 print(f"Error handling download command: {e}")
+
+        elif message.lower().startswith('/trust '):
+            try:
+                _, username = message.split(maxsplit=1)
+                recipient_id = name_to_id_map.get(username)
+                if not recipient_id:
+                    print(f"User '{username}' not found.")
+                    continue
+                recipient_public_key_pem = client_public_keys.get(recipient_id)
+                if not recipient_public_key_pem:
+                    print(f"Public key for '{username}' not found.")
+                    continue
+                add_trusted_client(username, recipient_public_key_pem)
+            except Exception as e:
+                print(f"Error adding trusted client: {e}")
                 
         elif message:
             await send_public_message(websocket, from_client, message)
@@ -234,7 +369,6 @@ async def handle_incoming_messages(websocket):
                 encrypted_msg = data.get("message", "")
                 # Decrypt the message
                 try:
-                    print("Encrypted Message: ", encrypted_msg)
                     decrypted_msg = decrypt_message(encrypted_msg, private_key)
                     print(f"\n[Private] {sender}: {decrypted_msg}")
                 except Exception as e:
@@ -247,9 +381,23 @@ async def handle_incoming_messages(websocket):
                 clients = data.get("clients", [])
                 print("Online clients:")
                 for client in clients:
-                    print(f"- {client['name']} (ID: {client['id']})")
-                    name_to_id_map[client['name']] = client['id']
-                    client_public_keys[client['id']] = client['public_key']
+                    client_id = client['id']
+                    client_name = client['name']
+                    client_public_key_pem = client['public_key']
+                    client_public_key_pem = normalize_pem(client_public_key_pem)
+                    client_public_keys[client_id] = client_public_key_pem
+                    name_to_id_map[client_name] = client_id
+
+                    # Verify the client against trusted clients
+                    trusted_public_key_pem = trusted_clients.get(client_name)
+                    if trusted_public_key_pem:
+                        if are_keys_equal(trusted_public_key_pem, client_public_key_pem):
+                            print(f"- {client_name} (ID: {client_id}) [Trusted]")
+                        else:
+                            print(f"- {client_name} (ID: {client_id}) [WARNING: Public key does not match trusted key]")
+                    else:
+                        print(f"- {client_name} (ID: {client_id}) [Untrusted]")
+
                     
             elif data["type"] == "file_upload_url":
                 # Server provided an upload URL, initiate HTTP upload
@@ -284,19 +432,51 @@ async def handle_incoming_messages(websocket):
         print("Connection closed by the server.")
         sys.exit()
 
+def load_trusted_clients(filename='trusted_clients.txt'):
+    trusted_clients = {}
+    if not os.path.exists(filename):
+        print(f"Trusted clients file '{filename}' not found.")
+        return trusted_clients
+
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line == '-----BEGIN TRUSTED CLIENT-----':
+            i += 1
+            # Read the username
+            username = lines[i].strip()
+            i += 1
+            # Read the public key
+            public_key_lines = []
+            while i < len(lines) and lines[i].strip() != '-----END TRUSTED CLIENT-----':
+                public_key_lines.append(lines[i])
+                i += 1
+            public_key_pem = '\n'.join(public_key_lines).strip()
+            # Store the public key against the username
+            trusted_clients[username] = public_key_pem
+        i += 1
+    return trusted_clients
+
 # Client's main function
 async def main():
-    global file_server
+    global file_server, private_key, public_key, private_key_file, public_key_file, trusted_clients
     startup = False
     while not startup:
         startup_option = input("Enter Preset Number or manual: ").strip()
         if startup_option == "1":
             uri = "ws://localhost:23451"
             startup = True
+            private_key_file = 'private_key.pem'
+            public_key_file = 'public_key.pem'
 
         elif startup_option == "2":
             uri = "ws://localhost:23452"
             startup = True
+            private_key_file = 'private_key_1.pem'
+            public_key_file = 'public_key_1.pem'
 
         elif startup_option.lower() == "manual":
             file_server = input("Enter <ip-address>:<port>: ")
@@ -307,7 +487,8 @@ async def main():
             print("Invalid option.")
 
     # Generate key pair and fingerprint
-    private_key, public_key = generate_key_pair()
+    private_key, public_key = load_or_generate_keypair()
+    trusted_clients = load_trusted_clients()
     fingerprint = hashes.Hash(hashes.SHA256(), backend=default_backend())
     fingerprint.update(serialize_public_key(public_key).encode('utf-8'))
     fingerprint_hex = fingerprint.finalize().hex()
@@ -323,6 +504,8 @@ async def main():
     print("/disconnect              disconnect from server")
     print("/upload <file_path>      uploads file")
     print("/download <file_name>    downloads file")
+    print("/trust <username>        add a user to your trusted clients")
+
     async with websockets.connect(uri) as websocket:
         await send_hello_message(websocket, fingerprint_hex, public_key, from_client)
 

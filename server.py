@@ -88,6 +88,7 @@ async def handle_client_messages(websocket, client_id):
                     'clients': client_list,
                 }
                 await websocket.send(json.dumps(response))
+                
             elif data['type'] == 'client_disconnect':
                 print(f"Client {client_id} requested disconnect.")
             else:
@@ -155,7 +156,6 @@ async def start_http_server():
     site = web.TCPSite(runner, 'localhost', 8080)  # HTTP server running on port 8080
     await site.start()
     print("HTTP server started on http://localhost:8080")
-
 
 # Handle messages from servers
 async def handle_server_messages(websocket, sid):
@@ -229,7 +229,6 @@ async def handle_server_disconnection(sid):
         else:
             print(f"No URI available to reconnect to server {sid}.")
 
-
 # Reconnect to a server
 async def reconnect_to_server(uri, sid):
     while True:
@@ -266,6 +265,14 @@ async def reconnect_to_server(uri, sid):
             print(f"Failed to reconnect to server {sid}: {e}")
             await asyncio.sleep(5)  # Wait before retrying
 
+def add_pem_headers(key_pem):
+    key_pem = key_pem.strip()
+    if not key_pem.startswith('-----BEGIN PUBLIC KEY-----'):
+        key_pem = '-----BEGIN PUBLIC KEY-----\n' + key_pem
+    if not key_pem.endswith('-----END PUBLIC KEY-----'):
+        key_pem = key_pem + '\n-----END PUBLIC KEY-----'
+    return key_pem
+
 # Accept incoming connections
 async def accept_connection(websocket, path):
     try:
@@ -275,6 +282,7 @@ async def accept_connection(websocket, path):
             client_id = data['fingerprint']
             client_name = data.get('name', 'Unknown')
             client_public_key_pem = data.get('public-key')  # Get the public key
+            client_public_key_pem = add_pem_headers(client_public_key_pem)
             connected_clients[client_id] = {
                 'client_id': client_id,
                 'websocket': websocket,
