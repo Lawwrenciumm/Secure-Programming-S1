@@ -385,7 +385,7 @@ async def start_server():
 
         elif startup_option == "2":
             host_address = "ws://localhost:23452"
-            host_port = "23451"
+            host_port = "23452"
             server_id = "2"
             neighbour_servers = "23451"
             startup = True
