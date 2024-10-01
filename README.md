@@ -48,7 +48,7 @@ To connect to custom uri, it should be the same uri as your server setup, in the
 
 Once chosen your setup, you will be prompted ```Enter your name: ```, just enter name you can remember, or your least favorite Itlian brand dog food. Leave it empty, and you shall be named ```Anonymous```.
 
-If you didn't fuck anything up, your client will be connected to the server by now. ```COMMANDS``` should appear in your terminal, most of them are self explanatory.
+If you didn't mess anything up, your client will be connected to the server by now. ```COMMANDS``` should appear in your terminal, most of them are self explanatory.
 
 Start typing now to send message into public chat.
 
