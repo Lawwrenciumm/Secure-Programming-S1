@@ -31,7 +31,6 @@ async def forward_to_servers(message, exclude_server=None):
         websocket = conn_info['websocket']
         try:
             await websocket.send(json.dumps(message))
-            print("Forwading message to global: ", message)
         except websockets.ConnectionClosed:
             print(f"Connection to server {sid} lost.")
             # Handle reconnection
@@ -88,17 +87,12 @@ async def handle_client_messages(websocket, client_id):
                     'clients': client_list,
                 }
                 await websocket.send(json.dumps(response))
-                
-            elif data['type'] == 'client_disconnect':
-                print(f"Client {client_id} requested disconnect.")
+
             else:
                 print(f"Unknown message type from client {client_id}: {data['type']}")
     except websockets.ConnectionClosed:
-        print(f"Client {client_id} disconnected (ConnectionClosed).")
-    except Exception as e:
-        print(f"Exception in handle_client_messages for client {client_id}: {e}")
-    finally:
-        # Clean up client data
+        print(f"Client {client_id} disconnected.")
+        # Remove client from connected_clients and global_clients
         if client_id in connected_clients:
             del connected_clients[client_id]
         if client_id in global_clients:
@@ -156,6 +150,7 @@ async def start_http_server():
     site = web.TCPSite(runner, 'localhost', 8080)  # HTTP server running on port 8080
     await site.start()
     print("HTTP server started on http://localhost:8080")
+
 
 # Handle messages from servers
 async def handle_server_messages(websocket, sid):
@@ -229,6 +224,7 @@ async def handle_server_disconnection(sid):
         else:
             print(f"No URI available to reconnect to server {sid}.")
 
+
 # Reconnect to a server
 async def reconnect_to_server(uri, sid):
     while True:
@@ -265,14 +261,6 @@ async def reconnect_to_server(uri, sid):
             print(f"Failed to reconnect to server {sid}: {e}")
             await asyncio.sleep(5)  # Wait before retrying
 
-def add_pem_headers(key_pem):
-    key_pem = key_pem.strip()
-    if not key_pem.startswith('-----BEGIN PUBLIC KEY-----'):
-        key_pem = '-----BEGIN PUBLIC KEY-----\n' + key_pem
-    if not key_pem.endswith('-----END PUBLIC KEY-----'):
-        key_pem = key_pem + '\n-----END PUBLIC KEY-----'
-    return key_pem
-
 # Accept incoming connections
 async def accept_connection(websocket, path):
     try:
@@ -282,7 +270,6 @@ async def accept_connection(websocket, path):
             client_id = data['fingerprint']
             client_name = data.get('name', 'Unknown')
             client_public_key_pem = data.get('public-key')  # Get the public key
-            client_public_key_pem = add_pem_headers(client_public_key_pem)
             connected_clients[client_id] = {
                 'client_id': client_id,
                 'websocket': websocket,
@@ -379,52 +366,39 @@ async def connect_to_server(uri):
 # Main function to start the server
 async def start_server():
     global server_id, server_uri
-    host_ip = "localhost"
     # Get server details from the user
     startup = False
     while not startup:
         startup_option = input("Enter Preset Number or manual: ").strip()
         if startup_option == "1":
-            host_address = "ws://localhost:23451"
             host_port = "23451"
             server_id = "1"
             neighbour_servers = "23452"
             startup = True
 
         elif startup_option == "2":
-            host_address = "ws://localhost:23452"
             host_port = "23452"
             server_id = "2"
             neighbour_servers = "23451"
             startup = True
-        
-        elif startup_option == "3":
-            host_address = "ws://0.0.0.0:23451"
-            host_ip = "0.0.0.0"
-            host_port = "23451"
-            server_id = "0"
-            neighbour_servers = ""
-            startup = True
 
         elif startup_option.lower() == "manual":
-            host_ip = input("Server ip: ").strip()
-            host_port = input("Server port: ").strip()
-            host_address = f"ws://{host_ip}:{host_port}"
+            host_port = input("Server uri: ").strip()
             server_id = input("Server ID: ").strip()
-            neighbour_servers = input("Server Connections (space-separated ports): ").strip()
+            neighbour_servers = input("Server Connections (space-separated URIs): ").strip()
             startup = True
 
         else:
             print("Invalid option.")
             
-    server_uri = host_address
+    server_uri = f"ws://localhost:{host_port}"
     
     # Parse neighbour server URIs
     server_list = neighbour_servers.strip().split()
     server_list = ["ws://localhost:" + port for port in server_list]
 
     # Start the server to accept incoming connections
-    server = await websockets.serve(accept_connection, host_ip, int(host_port))
+    server = await websockets.serve(accept_connection, 'localhost', int(host_port))
     print(f"Server {server_id} started on port {host_port}")
 
     # Start the HTTP server for file upload/download
