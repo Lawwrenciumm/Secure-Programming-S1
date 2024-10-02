@@ -28,7 +28,7 @@ When prompted with ```Enter Preset Number or manual: ```, you can either enter a
 > [!TIP]
 > For express testing, recommend using ```1``` for the first server, ```2``` for the second server.
 
-For custom setup, three options will be prompted, ```Server URI```, ```Server ID``` and ```Server Connections```, enter info accordingly.<br /><br />
+For custom setup, three options will be prompted, ```Server IP```, ```Server Port```, ```Server ID``` and ```Server Connections```, enter info accordingly.<br /><br />
 Server uri format is as following ```ws://<ip-address>:<port-number>```. For exmaple, the testing preset 1 is hosted at ```ws://localhost:23451```, preset 2 is hosted at ```ws://localhost:23452```.<br /><br />
 ```Server ID``` option require every server to have its own, unquie ID. Preset 1 uses the id of ```1```, preset 2 uses the id of ```2```.<br /><br />
 ```Server Connections``` requires input of other servers with a direct connection, according to the [OLAF/Neighbourhood protocol](https://github.com/xvk-64/2024-secure-programming-protocol). 
@@ -44,7 +44,7 @@ When prompted with ```Enter Preset Number or manual: ```, you can either enter a
 > [!TIP]
 > Just like the server, for express testing, recommend using ```1``` to connect to server using preset 1, ```2``` to connect server using preset 2.
 
-To connect to custom uri, it should be the same uri as your server setup, in the format of ```ws://<ip-address>:<port-number>```.
+To connect to custom uri, it should be the same uri as your server setup, in the format of ```ws://<ip-address>:<port-number>```. But while entering in terminal, you can omit ```ws://``` from your input.
 
 Once chosen your setup, you will be prompted ```Enter your name: ```, just enter name you can remember, or your least favorite Itlian brand dog food. Leave it empty, and you shall be named ```Anonymous```.
 
