@@ -1,5 +1,7 @@
 # Secure Communication Application
-### THIS CODE HAS AT LEAST ONE VULNERABILITY
+> [!CAUTION]
+> This code has at least one vulnerability!
+
 **Python source code for Advanced Secure Protocol Design, Implementation and Review.**
 
 University of Adelaide | Secure Programming 3307 
@@ -11,7 +13,7 @@ The code is written with python, install python through your preferred source if
 Too lazy? Just download from [Python.org](https://www.python.org/).
 
 > [!IMPORTANT]
-> websockets and cryptography are required libraries. No, it is not negotiable.
+> Websockets and Cryptography are required libraries. No, it is not negotiable.
 
 Install the required libraries using the following command: <br />
 
