@@ -242,7 +242,12 @@ async def upload_file_http(url, file_path):
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB limit
     if os.path.getsize(file_path) > MAX_FILE_SIZE:
         raise ValueError("File exceeded size limit of 5MB")
+    
+    ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'}
+    
     file_name = os.path.basename(file_path)
+    if not os.path.splitext(file_name)[1].lower() in ALLOWED_EXTENSIONS:
+        raise ValueError("File type not allowed")
     
     async with aiohttp.ClientSession() as session:
         with open(file_path, 'rb') as f:
