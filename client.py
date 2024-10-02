@@ -10,11 +10,13 @@ import aiohttp
 import subprocess
 from collections import deque
 import base64
+import time
 
 request_queue = deque()
 name_to_id_map = {}
 client_public_keys = {}
 trusted_clients = {}
+last_message_time = 0
 
 def load_or_generate_keypair():
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
@@ -260,10 +262,19 @@ async def download_file_http(url, file_name):
 
 # Handle user input from the console
 async def handle_user_input(websocket, from_client, client_id):
+    global last_message_time
     loop = asyncio.get_event_loop()
     while True:
         message = await loop.run_in_executor(None, sys.stdin.readline)
         message = message.strip()
+
+        current_time = time.time()
+        time_since_last_message = current_time - last_message_time
+        
+        if time_since_last_message < 1:
+            print(f"Please wait {1 - time_since_last_message:.2f} seconds before sending another message.")
+            continue
+        
         if message.lower() == '/disconnect':
             print("Disconnecting from server...")
 
@@ -351,6 +362,8 @@ async def handle_user_input(websocket, from_client, client_id):
                 
         elif message:
             await send_public_message(websocket, from_client, message)
+            
+        last_message_time = time.time()
 
 # Handle incoming messages from the server
 async def handle_incoming_messages(websocket):
