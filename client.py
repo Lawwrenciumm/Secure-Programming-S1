@@ -236,6 +236,9 @@ def add_trusted_client(username, public_key_pem):
 
 # Function to upload a file via HTTP POST request
 async def upload_file_http(url, file_path):
+    MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB limit
+    if os.path.getsize(file_path) > MAX_FILE_SIZE:
+        raise ValueError("File exceeded size limit of 5MB")
     file_name = os.path.basename(file_path)
     
     async with aiohttp.ClientSession() as session:
