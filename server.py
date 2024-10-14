@@ -3,6 +3,7 @@ import asyncio
 import websockets
 import os
 from aiohttp import web
+import ssl
 
 # Global Variables
 connected_clients = {}      # Local clients connected to this server
