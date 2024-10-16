@@ -19,16 +19,17 @@ trusted_clients = {}
 last_message_time = 0
 MAX_MESSAGE_LENGTH = 250
 
+from getpass import getpass
+
 def load_or_generate_keypair():
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
-        # Load the private key
         with open(private_key_file, 'rb') as f:
+            password = getpass("Enter passphrase for your private key: ").encode()
             private_key = serialization.load_pem_private_key(
                 f.read(),
-                password=None,  # Use a password if you encrypt the private key
+                password=password,
                 backend=default_backend()
             )
-        # Load the public key
         with open(public_key_file, 'rb') as f:
             public_key = serialization.load_pem_public_key(
                 f.read(),
@@ -36,19 +37,18 @@ def load_or_generate_keypair():
             )
         print("Loaded existing keypair from files.")
     else:
-        # Generate a new keypair
         private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
             backend=default_backend()
         )
         public_key = private_key.public_key()
-        # Save the keys to files
+        password = getpass("Set a passphrase for your private key: ").encode()
         with open(private_key_file, 'wb') as f:
             f.write(private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption()  # Use encryption if desired
+                encryption_algorithm=serialization.BestAvailableEncryption(password)
             ))
         with open(public_key_file, 'wb') as f:
             f.write(public_key.public_bytes(
@@ -242,13 +242,13 @@ async def upload_file_http(url, file_path):
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB limit
     if os.path.getsize(file_path) > MAX_FILE_SIZE:
         raise ValueError("File exceeded size limit of 5MB")
-    
+
     ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'}
-    
+
     file_name = os.path.basename(file_path)
     if not os.path.splitext(file_name)[1].lower() in ALLOWED_EXTENSIONS:
         raise ValueError("File type not allowed")
-    
+
     async with aiohttp.ClientSession() as session:
         with open(file_path, 'rb') as f:
             files = {'file': (file_name, f)}
