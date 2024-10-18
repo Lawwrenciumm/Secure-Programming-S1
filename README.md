@@ -15,7 +15,8 @@ Isaac Joynes (a1827396)
 
 > [!IMPORTANT]
 > Error free code files are: client.py and server.py
-> and vulnerable files are vulnerableClient.py and vulnerableServer.py
+>
+> Vulnerable files are: vulnerableClient.py and vulnerableServer.py
 
 # Usage
 The code is written with python, install python through your preferred source if needed.
