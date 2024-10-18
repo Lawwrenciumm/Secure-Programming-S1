@@ -43,7 +43,8 @@ When prompted with ```Enter Preset Number or manual: ```, you can either enter a
 > [!TIP]
 > For express testing, recommend using ```1``` for the first server, ```2``` for the second server.
 
-For custom setup, three options will be prompted, ```Server IP```, ```Server Port```, ```Server ID``` and ```Server Connections```, enter info accordingly.<br /><br />
+For custom setup, three options will be prompted, ```Server IP```, ```Server Port```, ```Server ID``` and ```Server Connections```, enter info accordingly.
+
 Server uri format is as following ```ws://<ip-address>:<port-number>```. For exmaple, the testing preset 1 is hosted at ```ws://localhost:23451```, preset 2 is hosted at ```ws://localhost:23452```.<br /><br />
 ```Server ID``` option require every server to have its own, unquie ID. Preset 1 uses the id of ```1```, preset 2 uses the id of ```2```.<br /><br />
 ```Server Connections``` requires input of other servers with a direct connection, according to the [OLAF/Neighbourhood protocol](https://github.com/xvk-64/2024-secure-programming-protocol). 
@@ -56,10 +57,10 @@ Run the client file by using
 
 When prompted with ```Enter Preset Number or manual: ```, you can either enter a preset number or type ```manual``` for a custom setup. 
 
-Durning first-time setup, you will be prompted ```Set a passphrase for your private key:```, this is for setting a passphrase to access your private key to prevent malicious attacks. Remember it, as you will need to enter it everytime the private key is accessed. In the senario where you forgotten your passphrase, delete the existing ```private_key.pem``` and ```public_key.pem``` to generate new keypairs. 
-
 > [!TIP]
 > Just like the server, for express testing, recommend using ```1``` to connect to server using preset 1, ```2``` to connect server using preset 2.
+
+Durning first-time setup, you will be prompted ```Set a passphrase for your private key:```, this is for setting a passphrase to access your private key to prevent malicious attacks. Remember it, as you will need to enter it everytime the private key is accessed. In the senario where you forgotten your passphrase, delete the existing ```private_key.pem``` and ```public_key.pem``` to generate new keypairs. 
 
 To connect to custom uri, it should be the same uri as your server setup, in the format of ```ws://<ip-address>:<port-number>```. But while entering in terminal, you can omit ```ws://``` from your input.
 
