@@ -24,11 +24,11 @@ The code is written with python, install python through your preferred source if
 Too lazy? Just download from [Python.org](https://www.python.org/).
 
 > [!IMPORTANT]
-> Websockets and Cryptography are required libraries. No, it is not negotiable.
+> Websockets, aiohttp and Cryptography are required libraries. No, it is not negotiable.
 
 Install the required libraries using the following command: <br />
 
-``` pip install websockets cryptography ```
+```pip install websockets aiohttp cryptography```
 
 Once finished, proceed to run server and client files.
 
