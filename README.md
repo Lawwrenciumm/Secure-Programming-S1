@@ -5,8 +5,11 @@
 University of Adelaide | Secure Programming 3307 
 
 **Group Members:**
+
 Harrison Lan
+
 Lawrence Smythe
+
 Isaac Joynes
 
 > [!IMPORTANT]
