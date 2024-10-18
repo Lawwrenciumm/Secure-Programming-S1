@@ -1,25 +1,27 @@
 import json
 import asyncio
 import websockets
+import aiohttp
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
 import sys
 import os
-import aiohttp
-import subprocess
-from collections import deque
 import base64
 import time
+from getpass import getpass
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-request_queue = deque()
+request_queue = asyncio.Queue()
 name_to_id_map = {}
 client_public_keys = {}
 trusted_clients = {}
+id_to_name_map = {}  # Mapping from client IDs to usernames
+short_id_to_full_id = {}  # Mapping of short IDs to full IDs
 last_message_time = 0
 MAX_MESSAGE_LENGTH = 250
-
-from getpass import getpass
+counter = 0  # Message counter for replay attack prevention
+client_id = None  # Initialize client_id as None
 
 def load_or_generate_keypair():
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
@@ -58,22 +60,38 @@ def load_or_generate_keypair():
         print("Generated new keypair and saved to files.")
     return private_key, public_key
 
-# Serialize the public key to PEM format
 def serialize_public_key(public_key):
     return public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode('utf-8')
 
+def create_signed_message(data, private_key, counter):
+    data_json = json.dumps(data, separators=(',', ':'))
+    message_to_sign = data_json + str(counter)
+    signature = private_key.sign(
+        message_to_sign.encode('utf-8'),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+    signature_b64 = base64.b64encode(signature).decode('utf-8')
+    signed_message = {
+        'type': 'signed_data',
+        'data': data_json,
+        'counter': counter,
+        'signature': signature_b64
+    }
+    return signed_message
+
 def normalize_pem(pem_str):
-    # Remove leading and trailing whitespace
     pem_str = pem_str.strip()
-    # Ensure headers and footers are present
     if not pem_str.startswith('-----BEGIN PUBLIC KEY-----'):
         pem_str = '-----BEGIN PUBLIC KEY-----\n' + pem_str
     if not pem_str.endswith('-----END PUBLIC KEY-----'):
         pem_str = pem_str + '\n-----END PUBLIC KEY-----'
-    # Remove any extra blank lines
     lines = pem_str.splitlines()
     lines = [line.strip() for line in lines if line.strip()]
     return '\n'.join(lines) + '\n'
@@ -97,8 +115,8 @@ def are_keys_equal(key_pem1, key_pem2):
         return False
 
 def load_trusted_clients(filename='trusted_clients.txt'):
+    trusted_clients = {}
     if not os.path.exists(filename):
-        print(f"Trusted clients file '{filename}' not found.")
         return trusted_clients
 
     with open(filename, 'r') as f:
@@ -109,95 +127,75 @@ def load_trusted_clients(filename='trusted_clients.txt'):
         line = lines[i].strip()
         if line == '-----BEGIN TRUSTED CLIENT-----':
             i += 1
-            # Read the username
             username = lines[i].strip()
             i += 1
             # Read the public key
             public_key_lines = []
-            while i < len(lines) and lines[i].strip() != '-----END TRUSTED CLIENT-----':
+            while i < len(lines):
+                line = lines[i].strip()
+                if line == '-----END TRUSTED CLIENT-----':
+                    break
                 public_key_lines.append(lines[i])
                 i += 1
             public_key_pem = '\n'.join(public_key_lines).strip()
-            # Remove extra blank lines
-            public_key_pem = '\n'.join([line.strip() for line in public_key_pem.splitlines() if line.strip() != ''])
-            # Store the public key against the username
+            public_key_pem = normalize_pem(public_key_pem)
             trusted_clients[username] = public_key_pem
         i += 1
     return trusted_clients
 
-def encrypt_message(message, recipient_public_key_pem):
-    # Load the recipient's public key
-    recipient_public_key = serialization.load_pem_public_key(
-        recipient_public_key_pem.encode('utf-8'),
-        backend=default_backend()
-    )
-    # Encrypt the message
-    ciphertext = recipient_public_key.encrypt(
-        message.encode('utf-8'),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-    # Encode the ciphertext in Base64 to send over JSON
-    ciphertext_b64 = base64.b64encode(ciphertext).decode('utf-8')
-    return ciphertext_b64
+def add_trusted_client(username, public_key_pem):
+    with open('trusted_clients.txt', 'a') as f:
+        f.write('-----BEGIN TRUSTED CLIENT-----\n')
+        f.write(f'{username}\n')
+        f.write(f'{public_key_pem}\n')
+        f.write('-----END TRUSTED CLIENT-----\n')
+    # Reload the trusted clients
+    global trusted_clients
+    trusted_clients = load_trusted_clients()
+    print(f"Added '{username}' to trusted clients.")
 
-def decrypt_message(ciphertext_b64, private_key):
-    # Decode the Base64 encoded ciphertext
-    ciphertext = base64.b64decode(ciphertext_b64)
-    # Decrypt the message
-    plaintext = private_key.decrypt(
-        ciphertext,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-    return plaintext.decode('utf-8')
-
-# Send the 'hello' message with the client's fingerprint and name
-async def send_hello_message(websocket, fingerprint_hex, public_key, from_client):
-    hello_message = {
+async def send_hello_message(websocket, public_key, from_client):
+    global counter, client_id  # Add client_id as global
+    data = {
         "type": "hello",
-        "fingerprint": fingerprint_hex,
-        "public-key": serialize_public_key(public_key),
+        "public_key": serialize_public_key(public_key),
         "name": from_client
     }
-    await websocket.send(json.dumps(hello_message))
+    signed_message = create_signed_message(data, private_key, counter)
+    await websocket.send(json.dumps(signed_message))
+    counter += 1
     response = await websocket.recv()
     data = json.loads(response)
-    if data['message'] == 'Connected to server':
+    if data.get('message') == 'Connected to server':
+        client_id = data.get('client_id')  # Capture client_id
         print("Connection Established")
     else:
         print("Connection Failed")
 
-# Send a public chat message
 async def send_public_message(websocket, from_client, message):
-    chat_message = {
+    global counter
+    data = {
         "type": "public_chat",
-        "from": from_client,
-        "message": message,
+        "sender": from_client,
+        "message": message
     }
-    await websocket.send(json.dumps(chat_message))
+    signed_message = create_signed_message(data, private_key, counter)
+    await websocket.send(json.dumps(signed_message))
+    counter += 1
 
-async def send_private_message(websocket, from_client, client_id, recipient_id, message):
-    # Get the recipient's public key
+async def send_private_message(websocket, from_client, recipient_id, message):
+    global counter
+    if not client_id:
+        print("Client ID not set.")
+        return
     recipient_public_key_pem = client_public_keys.get(recipient_id)
     if not recipient_public_key_pem:
         print(f"Public key for recipient {recipient_id} not found.")
         return
 
-    # Get the recipient's name from the id
-    recipient_name = None
-    for name, cid in name_to_id_map.items():
-        if cid == recipient_id:
-            recipient_name = name
-            break
+    recipient_name = id_to_name_map.get(recipient_id, recipient_id[:8])
 
-    # Verify the recipient's public key against trusted clients
+    # Check if recipient is trusted
     trusted_public_key_pem = trusted_clients.get(recipient_name)
     if trusted_public_key_pem:
         if not are_keys_equal(trusted_public_key_pem, recipient_public_key_pem):
@@ -215,63 +213,59 @@ async def send_private_message(websocket, from_client, client_id, recipient_id, 
             print("Message not sent.")
             return
 
-    # Encrypt the message
-    encrypted_message = encrypt_message(message, recipient_public_key_pem)
-    chat_message = {
-        "type": "private_chat",
-        "from": from_client,
-        "from_id": client_id,
-        "to": recipient_id,
-        "message": encrypted_message,
+    # Generate AES key and IV
+    aes_key = os.urandom(32)  # 256-bit key
+    iv = os.urandom(16)       # 128-bit IV
+
+    # Encrypt the chat object
+    chat_object = {
+        "chat": {
+            "participants": [
+                client_id,
+                recipient_id
+            ],
+            "message": message
+        }
     }
-    await websocket.send(json.dumps(chat_message))
+    chat_json = json.dumps(chat_object, separators=(',', ':'))
 
-def add_trusted_client(username, public_key_pem):
-    with open('trusted_clients.txt', 'a') as f:
-        f.write('\n-----BEGIN TRUSTED CLIENT-----\n')
-        f.write(f'{username}\n')
-        f.write(f'{public_key_pem}\n')
-        f.write('-----END TRUSTED CLIENT-----\n')
-    # Reload the trusted clients
-    global trusted_clients
-    trusted_clients = load_trusted_clients()
-    print(f"Added '{username}' to trusted clients.")
+    cipher = Cipher(algorithms.AES(aes_key), modes.CFB(iv))
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(chat_json.encode('utf-8')) + encryptor.finalize()
+    ciphertext_b64 = base64.b64encode(ciphertext).decode('utf-8')
 
-# Function to upload a file via HTTP POST request
-async def upload_file_http(url, file_path):
-    MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB limit
-    if os.path.getsize(file_path) > MAX_FILE_SIZE:
-        raise ValueError("File exceeded size limit of 5MB")
+    # Encrypt the AES key with recipient's public key
+    recipient_public_key = serialization.load_pem_public_key(
+        recipient_public_key_pem.encode('utf-8'),
+        backend=default_backend()
+    )
+    encrypted_aes_key = recipient_public_key.encrypt(
+        aes_key,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    encrypted_aes_key_b64 = base64.b64encode(encrypted_aes_key).decode('utf-8')
+    iv_b64 = base64.b64encode(iv).decode('utf-8')
 
-    ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'}
+    data = {
+        "type": "chat",
+        "participants": [recipient_id],  # Include recipients here
+        "destination_servers": [],
+        "iv": iv_b64,
+        "symm_keys": [
+            encrypted_aes_key_b64
+        ],
+        "chat": ciphertext_b64
+    }
+    signed_message = create_signed_message(data, private_key, counter)
+    await websocket.send(json.dumps(signed_message))
+    counter += 1
 
-    file_name = os.path.basename(file_path)
-    if not os.path.splitext(file_name)[1].lower() in ALLOWED_EXTENSIONS:
-        raise ValueError("File type not allowed")
-
-    async with aiohttp.ClientSession() as session:
-        with open(file_path, 'rb') as f:
-            files = {'file': (file_name, f)}
-            async with session.post(url, data=files) as response:
-                if response.status == 200:
-                    print(f"File '{file_name}' uploaded successfully via HTTP.")
-                else:
-                    print(f"Failed to upload file '{file_name}' via HTTP. Status: {response.status}")
-
-# Function to download a file via HTTP GET request
-async def download_file_http(url, file_name):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                with open(file_name, 'wb') as f:
-                    f.write(await response.read())
-                print(f"File '{file_name}' downloaded successfully via HTTP.")
-            else:
-                print(f"Failed to download file '{file_name}' via HTTP. Status: {response.status}")
-
-# Handle user input from the console
-async def handle_user_input(websocket, from_client, client_id):
-    global last_message_time
+async def handle_user_input(websocket, from_client):
+    global last_message_time, counter
     loop = asyncio.get_event_loop()
     while True:
         message = await loop.run_in_executor(None, sys.stdin.readline)
@@ -279,84 +273,44 @@ async def handle_user_input(websocket, from_client, client_id):
 
         current_time = time.time()
         time_since_last_message = current_time - last_message_time
-        
-        
+
         if len(message) > MAX_MESSAGE_LENGTH:
-                print(f"Message too long. Please limit your message to {MAX_MESSAGE_LENGTH} characters.")
-                continue
+            print(f"Message too long. Please limit your message to {MAX_MESSAGE_LENGTH} characters.")
+            continue
         if time_since_last_message < 1:
             print(f"Please wait {1 - time_since_last_message:.2f} seconds before sending another message.")
             continue
-        
+
         if message.lower() == '/disconnect':
             print("Disconnecting from server...")
-
-            # Send a disconnect message to the server
-            disconnect_message = {
-                "type": "client_disconnect",
-                "client_id": client_id,
-                "name": from_client
-            }
-            await websocket.send(json.dumps(disconnect_message))
-            
-            await websocket.close()  # Close WebSocket connection
-            sys.exit() 
+            await websocket.close()
+            sys.exit()
 
         elif message.lower() == '/clients':
-            # Request the list of online clients
-            await websocket.send(json.dumps({'type': 'client_list_request'}))
+            data = {
+                "type": "client_list_request"
+            }
+            signed_message = create_signed_message(data, private_key, counter)
+            await websocket.send(json.dumps(signed_message))
+            counter += 1
+
         elif message.startswith('/msg '):
             parts = message.split(' ', 2)
             if len(parts) < 3:
-                print("Usage: /msg <recipient_id> <message>")
+                print("Usage: /msg <recipient_id_or_name> <message>")
                 continue
-            recipient_id = parts[1]
+            recipient_input = parts[1]
             private_message = parts[2]
-            if recipient_id not in client_public_keys:
-                print(f"Public key for recipient {recipient_id} not found. Requesting client list...")
-                await websocket.send(json.dumps({'type': 'client_list_request'}))
-                # Wait briefly to receive the client list
-                await asyncio.sleep(1)
-            await send_private_message(websocket, from_client, client_id, recipient_id, private_message)
-                
-        elif message.lower().startswith('/upload'):
-            try:
-                _, file_path = message.split(maxsplit=1)
 
-                # Execute the curl command to upload the file
-                curl_command = ['curl', '-F', f'file=@{file_path}', 'http://localhost:8080/api/upload']
-                result = subprocess.run(curl_command, capture_output=True, text=True)
-
-                # Check if the curl command was successful
-                if result.returncode == 0:
-                    print(f"File '{file_path}' uploaded successfully.")
-                    print(f"Response: {result.stdout}")
-                else:
-                    print(f"File upload failed with error: {result.stderr}")
-
-            except Exception as e:
-                print(f"Error handling upload command: {e}")
-
-        elif message.lower().startswith('/download'):
-            try:
-                _, file_name = message.split(maxsplit=1)
-                
-                # Specify the URL for the file download
-                download_url = f"http://localhost:8080/api/download/{file_name}"
-                
-                # Execute the curl command to download the file
-                curl_command = ['curl', '-o', file_name, download_url]
-                result = subprocess.run(curl_command, capture_output=True, text=True)
-
-                # Check if the curl command was successful
-                if result.returncode == 0:
-                    print(f"File '{file_name}' downloaded successfully.")
-                    print(f"Response: {result.stdout}")
-                else:
-                    print(f"File download failed with error: {result.stderr}")
-
-            except Exception as e:
-                print(f"Error handling download command: {e}")
+            # Try to resolve recipient as username
+            recipient_id = name_to_id_map.get(recipient_input)
+            if not recipient_id:
+                # Try to resolve recipient as short ID
+                recipient_id = short_id_to_full_id.get(recipient_input)
+            if not recipient_id:
+                print(f"Recipient {recipient_input} not found.")
+                continue
+            await send_private_message(websocket, from_client, recipient_id, private_message)
 
         elif message.lower().startswith('/trust '):
             try:
@@ -372,123 +326,137 @@ async def handle_user_input(websocket, from_client, client_id):
                 add_trusted_client(username, recipient_public_key_pem)
             except Exception as e:
                 print(f"Error adding trusted client: {e}")
-                
+
+        elif message.lower().startswith('/upload '):
+            try:
+                _, file_path = message.split(maxsplit=1)
+                upload_url = 'http://localhost:8080/api/upload'  # Replace with your server's upload endpoint
+                await upload_file_http(upload_url, file_path)
+            except Exception as e:
+                print(f"Error handling upload command: {e}")
+
+        elif message.lower().startswith('/download '):
+            try:
+                _, file_name = message.split(maxsplit=1)
+                download_url = f'http://localhost:8080/api/download/{file_name}'  # Replace with your server's download endpoint
+                await download_file_http(download_url, file_name)
+            except Exception as e:
+                print(f"Error handling download command: {e}")
+
         elif message:
             await send_public_message(websocket, from_client, message)
-            
+
         last_message_time = time.time()
 
-# Handle incoming messages from the server
 async def handle_incoming_messages(websocket):
     try:
         async for message in websocket:
             data = json.loads(message)
 
-            # Handle messages based on their type
-            if data["type"] == "public_chat":
-                sender = data.get("from", "Unknown")
-                msg = data.get("message", "")
-                print(f"\n[Public] {sender}: {msg}")
-
-            elif data["type"] == "private_chat":
-                sender = data.get("from", "Unknown")
-                encrypted_msg = data.get("message", "")
-                # Decrypt the message
-                try:
-                    decrypted_msg = decrypt_message(encrypted_msg, private_key)
-                    print(f"\n[Private] {sender}: {decrypted_msg}")
-                except Exception as e:
-                    print(f"\n[Private] {sender}: [Unable to decrypt message]")
-
-            elif data["type"] == "ack":
-                print(f"Server: {data['message']}")
-
-            elif data["type"] == "client_list":
-                clients = data.get("clients", [])
+            if data["type"] == "client_list":
+                servers = data.get("servers", [])
                 print("Online clients:")
-                for client in clients:
-                    client_id = client['id']
-                    client_name = client['name']
-                    client_public_key_pem = client['public_key']
-                    client_public_key_pem = normalize_pem(client_public_key_pem)
-                    client_public_keys[client_id] = client_public_key_pem
-                    name_to_id_map[client_name] = client_id
+                for server in servers:
+                    clients = server.get("clients", [])
+                    for client in clients:
+                        client_id_server = client['id']
+                        short_id = client_id_server[:8]
+                        short_id_to_full_id[short_id] = client_id_server  # Map short ID to full ID
+                        client_public_key_pem = client['public_key']
+                        client_public_key_pem = normalize_pem(client_public_key_pem)
+                        client_public_keys[client_id_server] = client_public_key_pem
+                        username = client.get('name', short_id)
+                        name_to_id_map[username] = client_id_server
+                        id_to_name_map[client_id_server] = username  # Add this line
+                        print(f"- {username} (ID: {short_id})")
 
-                    # Verify the client against trusted clients
-                    trusted_public_key_pem = trusted_clients.get(client_name)
+            elif data["type"] == "signed_data":
+                data_json = data['data']
+                data_dict = json.loads(data_json)
+                if data_dict["type"] == "public_chat":
+                    sender_name = data_dict.get("sender", "Unknown")
+                    message_text = data_dict.get("message", "")
+                    print(f"\n[Public] {sender_name}: {message_text}")
+                elif data_dict["type"] == "chat":
+                    iv_b64 = data_dict["iv"]
+                    symm_keys = data_dict["symm_keys"]
+                    ciphertext_b64 = data_dict["chat"]
+
+                    # Decrypt AES key
+                    encrypted_aes_key_b64 = symm_keys[0]  # Assuming single recipient
+                    encrypted_aes_key = base64.b64decode(encrypted_aes_key_b64)
+                    aes_key = private_key.decrypt(
+                        encrypted_aes_key,
+                        padding.OAEP(
+                            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                            algorithm=hashes.SHA256(),
+                            label=None
+                        )
+                    )
+
+                    # Decrypt message
+                    iv = base64.b64decode(iv_b64)
+                    ciphertext = base64.b64decode(ciphertext_b64)
+                    cipher = Cipher(algorithms.AES(aes_key), modes.CFB(iv))
+                    decryptor = cipher.decryptor()
+                    plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+                    chat_data = json.loads(plaintext.decode('utf-8'))
+                    participants = chat_data["chat"]["participants"]
+                    message_text = chat_data["chat"]["message"]
+                    sender_id = participants[0]
+                    sender_name = id_to_name_map.get(sender_id, sender_id[:8])
+
+                    # Check if sender is trusted
+                    sender_public_key_pem = client_public_keys.get(sender_id)
+                    trusted_public_key_pem = trusted_clients.get(sender_name)
                     if trusted_public_key_pem:
-                        if are_keys_equal(trusted_public_key_pem, client_public_key_pem):
-                            print(f"- {client_name} (ID: {client_id}) [Trusted]")
-                        else:
-                            print(f"- {client_name} (ID: {client_id}) [WARNING: Public key does not match trusted key]")
+                        if not are_keys_equal(trusted_public_key_pem, sender_public_key_pem):
+                            print(f"\n[WARNING] Sender '{sender_name}' public key does not match the trusted key.")
                     else:
-                        print(f"- {client_name} (ID: {client_id}) [Untrusted]")
+                        print(f"\n[WARNING] The sender '{sender_name}' is not in your trusted clients.")
 
-                    
-            elif data["type"] == "file_upload_url":
-                # Server provided an upload URL, initiate HTTP upload
-                upload_url = data["url"]
-                file_path = data["file_path"]
-                await upload_file_http(upload_url, file_path)
-            
-            elif data["type"] == "file_download_url":
-                # Server provided a download URL, initiate HTTP download
-                download_url = data["url"]
-                file_name = data["filename"]
-                await download_file_http(download_url, file_name)
-
-            elif data["type"] == "file_upload_ack":
-                print(f"Server: {data['message']}")
-
-            elif data["type"] == "file_download_nack":
-                print(f"Server: {data['message']}")
-
-            else:
-                print(f"Received unknown message type: {data}")
-            # Handle queued requests for upload/download
-            if request_queue:
-                operation, file_param = request_queue.popleft()
-                if operation == 'upload':
-                    await websocket.send(json.dumps({"type": "file_upload_request", "file_path": file_param}))
-                elif operation == 'download':
-                    await websocket.send(json.dumps({"type": "file_download_request", "filename": file_param}))
-
-                    
+                    print(f"\n[Private] {sender_name}: {message_text}")
+                else:
+                    print(f"Received unknown message type: {data}")
     except websockets.ConnectionClosed:
         print("Connection closed by the server.")
         sys.exit()
 
-def load_trusted_clients(filename='trusted_clients.txt'):
-    trusted_clients = {}
-    if not os.path.exists(filename):
-        print(f"Trusted clients file '{filename}' not found.")
-        return trusted_clients
+async def upload_file_http(url, file_path):
+    MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB limit
+    if os.path.getsize(file_path) > MAX_FILE_SIZE:
+        raise ValueError("File exceeded size limit of 5MB")
 
-    with open(filename, 'r') as f:
-        lines = f.readlines()
+    ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'}
 
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if line == '-----BEGIN TRUSTED CLIENT-----':
-            i += 1
-            # Read the username
-            username = lines[i].strip()
-            i += 1
-            # Read the public key
-            public_key_lines = []
-            while i < len(lines) and lines[i].strip() != '-----END TRUSTED CLIENT-----':
-                public_key_lines.append(lines[i])
-                i += 1
-            public_key_pem = '\n'.join(public_key_lines).strip()
-            # Store the public key against the username
-            trusted_clients[username] = public_key_pem
-        i += 1
-    return trusted_clients
+    file_name = os.path.basename(file_path)
+    if not os.path.splitext(file_name)[1].lower() in ALLOWED_EXTENSIONS:
+        raise ValueError("File type not allowed")
 
-# Client's main function
+    async with aiohttp.ClientSession() as session:
+        with open(file_path, 'rb') as f:
+            data = aiohttp.FormData()
+            data.add_field('file', f, filename=file_name)
+            async with session.post(url, data=data) as response:
+                if response.status == 200:
+                    print(f"File '{file_name}' uploaded successfully via HTTP.")
+                else:
+                    print(f"Failed to upload file '{file_name}' via HTTP. Status: {response.status}")
+
+async def download_file_http(url, file_name):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status == 200:
+                with open(file_name, 'wb') as f:
+                    f.write(await response.read())
+                print(f"File '{file_name}' downloaded successfully via HTTP.")
+            else:
+                print(f"Failed to download file '{file_name}' via HTTP. Status: {response.status}")
+
 async def main():
-    global file_server, private_key, public_key, private_key_file, public_key_file, trusted_clients
+    global private_key, public_key, private_key_file, public_key_file, trusted_clients
+    global counter
+    global client_id  # Add this line
     startup = False
     while not startup:
         startup_option = input("Enter Preset Number or manual: ").strip()
@@ -512,31 +480,35 @@ async def main():
         else:
             print("Invalid option.")
 
-    # Generate key pair and fingerprint
+    # Generate key pair
     private_key, public_key = load_or_generate_keypair()
     trusted_clients = load_trusted_clients()
-    fingerprint = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    fingerprint.update(serialize_public_key(public_key).encode('utf-8'))
-    fingerprint_hex = fingerprint.finalize().hex()
-    print(f"Your client ID is: {fingerprint_hex}")
 
     from_client = input("Enter your name: ").strip()
     if not from_client:
         from_client = "Anonymous"
-    
+
     print("COMMANDS")
-    print("/clients                 see all online users")
-    print("/msg <id> <message>      private message")
-    print("/disconnect              disconnect from server")
-    print("/upload <file_path>      uploads file")
-    print("/download <file_name>    downloads file")
-    print("/trust <username>        add a user to your trusted clients")
+    print("/clients                         see all online users")
+    print("/msg <id_or_name> <message>      private message")
+    print("/disconnect                      disconnect from server")
+    print("/trust <username>                add a user to your trusted clients")
+    print("/upload <file_path>              upload a file")
+    print("/download <file_name>            download a file")
 
     async with websockets.connect(uri) as websocket:
-        await send_hello_message(websocket, fingerprint_hex, public_key, from_client)
+        await send_hello_message(websocket, public_key, from_client)
+
+        # Request client list after connecting
+        data = {
+            "type": "client_list_request"
+        }
+        signed_message = create_signed_message(data, private_key, counter)
+        await websocket.send(json.dumps(signed_message))
+        counter += 1
 
         # Start tasks for sending and receiving messages
-        send_task = asyncio.create_task(handle_user_input(websocket, from_client, fingerprint_hex))
+        send_task = asyncio.create_task(handle_user_input(websocket, from_client))
         receive_task = asyncio.create_task(handle_incoming_messages(websocket))
 
         # Wait for either task to complete
@@ -548,7 +520,6 @@ async def main():
         for task in pending:
             task.cancel()
 
-# Run the client
 if __name__ == "__main__":
     try:
         asyncio.run(main())
