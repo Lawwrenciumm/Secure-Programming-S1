@@ -56,7 +56,7 @@ Run the client file by using
 
 When prompted with ```Enter Preset Number or manual: ```, you can either enter a preset number or type ```manual``` for a custom setup. 
 
-Durning first time setup, you will be prompted ```Set a passphrase for your private key:```, this is for setting a password to access your private key to prevent attacks. Remember it, as you will need to enter it everytime the program is started. in the case where you forgotten your passphrase, delete the existing ```private_key.pem``` and ```public_key.pem``` keypairs to setup new ones. 
+Durning first-time setup, you will be prompted ```Set a passphrase for your private key:```, this is for setting a passphrase to access your private key to prevent malicious attacks. Remember it, as you will need to enter it everytime the private key is accessed. In the senario where you forgotten your passphrase, delete the existing ```private_key.pem``` and ```public_key.pem``` to generate new keypairs. 
 
 > [!TIP]
 > Just like the server, for express testing, recommend using ```1``` to connect to server using preset 1, ```2``` to connect server using preset 2.
