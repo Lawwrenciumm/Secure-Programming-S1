@@ -23,6 +23,9 @@ MAX_MESSAGE_LENGTH = 250
 counter = 0  # Message counter for replay attack prevention
 client_id = None  # Initialize client_id as None
 
+# To store unique filenames received from the server
+uploaded_files = {}
+
 def load_or_generate_keypair():
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
         with open(private_key_file, 'rb') as f:
@@ -331,15 +334,17 @@ async def handle_user_input(websocket, from_client):
             try:
                 _, file_path = message.split(maxsplit=1)
                 upload_url = 'http://localhost:8080/api/upload'  # Replace with your server's upload endpoint
-                await upload_file_http(upload_url, file_path)
+                unique_filename = await upload_file_http(upload_url, file_path)
+                if unique_filename:
+                    uploaded_files[file_path] = unique_filename  # Store mapping
             except Exception as e:
                 print(f"Error handling upload command: {e}")
 
         elif message.lower().startswith('/download '):
             try:
-                _, file_name = message.split(maxsplit=1)
-                download_url = f'http://localhost:8080/api/download/{file_name}'  # Replace with your server's download endpoint
-                await download_file_http(download_url, file_name)
+                _, unique_filename = message.split(maxsplit=1)
+                download_url = f'http://localhost:8080/api/download/{unique_filename}'  # Use unique filename
+                await download_file_http(download_url, unique_filename)
             except Exception as e:
                 print(f"Error handling download command: {e}")
 
@@ -429,29 +434,33 @@ async def upload_file_http(url, file_path):
 
     ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'}
 
-    file_name = os.path.basename(file_path)
-    if not os.path.splitext(file_name)[1].lower() in ALLOWED_EXTENSIONS:
+    original_file_name = os.path.basename(file_path)
+    if not os.path.splitext(original_file_name)[1].lower() in ALLOWED_EXTENSIONS:
         raise ValueError("File type not allowed")
 
     async with aiohttp.ClientSession() as session:
         with open(file_path, 'rb') as f:
             data = aiohttp.FormData()
-            data.add_field('file', f, filename=file_name)
+            data.add_field('file', f, filename=original_file_name)
             async with session.post(url, data=data) as response:
                 if response.status == 200:
-                    print(f"File '{file_name}' uploaded successfully via HTTP.")
+                    unique_filename = await response.text()
+                    print(f"File '{original_file_name}' uploaded successfully via HTTP.")
+                    print(f"Unique filename: {unique_filename}")
+                    return unique_filename  # Return the unique filename
                 else:
-                    print(f"Failed to upload file '{file_name}' via HTTP. Status: {response.status}")
+                    print(f"Failed to upload file '{original_file_name}' via HTTP. Status: {response.status}")
+                    return None
 
-async def download_file_http(url, file_name):
+async def download_file_http(url, save_as_filename):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             if response.status == 200:
-                with open(file_name, 'wb') as f:
+                with open(save_as_filename, 'wb') as f:
                     f.write(await response.read())
-                print(f"File '{file_name}' downloaded successfully via HTTP.")
+                print(f"File '{save_as_filename}' downloaded successfully via HTTP.")
             else:
-                print(f"Failed to download file '{file_name}' via HTTP. Status: {response.status}")
+                print(f"Failed to download file '{save_as_filename}' via HTTP. Status: {response.status}")
 
 async def main():
     global private_key, public_key, private_key_file, public_key_file, trusted_clients
@@ -494,7 +503,7 @@ async def main():
     print("/disconnect                      disconnect from server")
     print("/trust <username>                add a user to your trusted clients")
     print("/upload <file_path>              upload a file")
-    print("/download <file_name>            download a file")
+    print("/download <filename>             download a file using unique filename")
 
     async with websockets.connect(uri) as websocket:
         await send_hello_message(websocket, public_key, from_client)

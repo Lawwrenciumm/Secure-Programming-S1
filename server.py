@@ -3,6 +3,7 @@ import asyncio
 import websockets
 import os
 import base64
+import uuid  # Added to generate unique filenames
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from aiohttp import web
@@ -425,32 +426,37 @@ async def handle_upload(request):
     if field.name != 'file':
         return web.Response(status=400, text="File not found in request.")
 
-    filename = field.filename
+    original_filename = field.filename
     # Security checks
     ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'}
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB limit
 
-    if not os.path.splitext(filename)[1].lower() in ALLOWED_EXTENSIONS:
+    if not os.path.splitext(original_filename)[1].lower() in ALLOWED_EXTENSIONS:
         return web.Response(status=400, text="File type not allowed.")
 
     size = 0
-    with open(os.path.join(FILE_STORAGE_DIR, filename), 'wb') as f:
+    unique_id = str(uuid.uuid4())
+    unique_filename = f"{unique_id}_{original_filename}"
+    file_path = os.path.join(FILE_STORAGE_DIR, unique_filename)
+    with open(file_path, 'wb') as f:
         while True:
             chunk = await field.read_chunk()
             if not chunk:
                 break
             size += len(chunk)
             if size > MAX_FILE_SIZE:
+                os.remove(file_path)  # Clean up partial file
                 return web.Response(status=400, text="File exceeded size limit of 5MB.")
             f.write(chunk)
-    return web.Response(status=200, text=f"File '{filename}' uploaded successfully.")
+    # Return the unique filename to the client
+    return web.Response(status=200, text=unique_filename)
 
 async def handle_download(request):
-    filename = request.match_info.get('filename', None)
-    if not filename:
+    unique_filename = request.match_info.get('filename', None)
+    if not unique_filename:
         return web.Response(status=400, text="Filename not provided.")
 
-    file_path = os.path.join(FILE_STORAGE_DIR, filename)
+    file_path = os.path.join(FILE_STORAGE_DIR, unique_filename)
     if not os.path.exists(file_path):
         return web.Response(status=404, text="File not found.")
 
