@@ -1,11 +1,17 @@
-# Secure Communication Application
-> [!CAUTION]
-> This code has at least one vulnerability!
+# Secure Communication Application for group 28
 
 **Python source code for Advanced Secure Protocol Design, Implementation and Review.**
 
 University of Adelaide | Secure Programming 3307 
 
+**Group Members:**
+Harrison Lan
+Lawrence Smythe
+Isaac Joynes
+
+> [!IMPORTANT]
+> Error free code files are client.py and server.py
+> And Vulnerable files are vulnerableClient.py and vulnerableServer.py
 
 # Usage
 The code is written with python, install python through your preferred source if needed.
