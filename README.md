@@ -5,11 +5,13 @@
 University of Adelaide | Secure Programming 3307 
 
 **Group Members:**
+
 Harrison Lan (a1798025)
 
 Lawrence Smythe (a1827540)
 
 Isaac Joynes (a1827396)
+
 
 > [!IMPORTANT]
 > Error free code files are client.py and server.py
